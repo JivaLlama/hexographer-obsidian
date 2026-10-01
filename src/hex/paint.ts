@@ -4,15 +4,17 @@ import type { HexLayers } from "./layers";
 export interface PaintState {
   tool: PaintTool;
   biome: BiomeId;
-  /** When painting roads, whether to set or clear. Brush sets true; erase clears. */
-  roadOn: boolean;
+  icon: string;
+  /** When painting roads/rivers, whether to set or clear. */
+  pathOn: boolean;
 }
 
 export function createPaintState(): PaintState {
   return {
     tool: "biome",
     biome: "grass",
-    roadOn: true,
+    icon: "castle",
+    pathOn: true,
   };
 }
 
@@ -35,8 +37,20 @@ export function paintCell(
     }
     case "road": {
       const prev = layers.hasRoad(q, r);
-      if (prev === state.roadOn) return false;
-      layers.setRoad(q, r, state.roadOn);
+      if (prev === state.pathOn) return false;
+      layers.setRoad(q, r, state.pathOn);
+      return true;
+    }
+    case "river": {
+      const prev = layers.hasRiver(q, r);
+      if (prev === state.pathOn) return false;
+      layers.setRiver(q, r, state.pathOn);
+      return true;
+    }
+    case "icon": {
+      const prev = layers.getIcon(q, r) ?? "";
+      if (prev === state.icon) return false;
+      layers.setIcon(q, r, state.icon);
       return true;
     }
     case "label": {
@@ -50,11 +64,15 @@ export function paintCell(
       const had =
         layers.getBiome(q, r) !== undefined ||
         layers.hasRoad(q, r) ||
+        layers.hasRiver(q, r) ||
+        layers.getIcon(q, r) !== undefined ||
         layers.getLabel(q, r) !== undefined;
       if (!had) return false;
       layers.erase(q, r);
       return true;
     }
+    case "pan":
+      return false;
     default:
       return false;
   }

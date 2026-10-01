@@ -3,7 +3,7 @@ import { HEX_MAP_VIEW_TYPE, HexMapView } from "./view";
 
 export default class HexographerPlugin extends Plugin {
   async onload(): Promise<void> {
-    this.registerView(HEX_MAP_VIEW_TYPE, (leaf) => new HexMapView(leaf));
+    this.registerView(HEX_MAP_VIEW_TYPE, (leaf) => new HexMapView(leaf, this));
 
     this.addRibbonIcon("map", "Open hex map", () => {
       void this.activateView();

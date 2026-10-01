@@ -4,7 +4,7 @@ export interface Axial {
   r: number;
 }
 
-export type LayerKind = "biome" | "road" | "label";
+export type LayerKind = "biome" | "road" | "river" | "icon" | "label";
 
 export type BiomeId =
   | "grass"
@@ -18,6 +18,7 @@ export type BiomeId =
   | "coast"
   | "void";
 
+/** @deprecated Prefer BIOME_DEFS from catalog; kept for color fallbacks. */
 export const BIOME_COLORS: Record<BiomeId, string> = {
   grass: "#6aab5f",
   forest: "#2d6a3e",
@@ -44,11 +45,13 @@ export const BIOME_LIST: BiomeId[] = [
   "void",
 ];
 
-export type PaintTool = "biome" | "road" | "label" | "erase";
+export type PaintTool = "biome" | "road" | "river" | "icon" | "label" | "erase" | "pan";
 
 export interface LayerVisibility {
   biome: boolean;
   road: boolean;
+  river: boolean;
+  icon: boolean;
   label: boolean;
 }
 
@@ -60,6 +63,8 @@ export interface HexMapData {
   layers: {
     biome: Record<string, BiomeId>;
     road: Record<string, boolean>;
+    river: Record<string, boolean>;
+    icon: Record<string, string>;
     label: Record<string, string>;
   };
 }
@@ -77,11 +82,13 @@ export function defaultMap(name = "untitled", cols = 20, rows = 15): HexMapData 
   return {
     version: 1,
     name,
-    hexSize: 24,
+    hexSize: 28,
     grid: { cols, rows },
     layers: {
       biome: {},
       road: {},
+      river: {},
+      icon: {},
       label: {},
     },
   };

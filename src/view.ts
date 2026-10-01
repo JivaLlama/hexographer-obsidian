@@ -1,13 +1,15 @@
 import { ItemView, Notice, TFile, WorkspaceLeaf } from "obsidian";
+import type HexographerPlugin from "./main";
 import {
+  AssetCache,
   HexLayers,
   HexRenderer,
   MAP_DIR,
   MAP_EXT,
+  allAssetPaths,
   createPaintState,
   defaultMap,
   deserializeMap,
-  mapPath,
   paintCell,
   serializeMap,
   stringifyMap,
@@ -18,6 +20,8 @@ import {
   type PaintTool,
 } from "./hex";
 import { HexToolbar } from "./ui/toolbar";
+import { HexPalette } from "./ui/palette";
+import { LabelModal, NewMapModal, OpenMapModal, SaveMapModal } from "./ui/modals";
 
 export const HEX_MAP_VIEW_TYPE = "hex-map-view";
 
@@ -25,14 +29,17 @@ export class HexMapView extends ItemView {
   private canvasEl!: HTMLCanvasElement;
   private statusEl!: HTMLElement;
   private wrapEl!: HTMLElement;
+  private bodyEl!: HTMLElement;
   private toolbar!: HexToolbar;
+  private palette!: HexPalette;
 
   private layers = new HexLayers();
   private paint: PaintState = createPaintState();
   private renderer!: HexRenderer;
+  private assets: AssetCache;
   private mapMeta: Pick<HexMapData, "name" | "hexSize" | "grid"> = {
     name: "untitled",
-    hexSize: 24,
+    hexSize: 28,
     grid: { cols: 20, rows: 15 },
   };
   private filePath: string | null = null;
@@ -44,8 +51,12 @@ export class HexMapView extends ItemView {
   private lastPaintKey: string | null = null;
   private raf = 0;
 
-  constructor(leaf: WorkspaceLeaf) {
+  constructor(
+    leaf: WorkspaceLeaf,
+    private plugin: HexographerPlugin
+  ) {
     super(leaf);
+    this.assets = new AssetCache((rel) => this.resolveAssetUrl(rel));
   }
 
   getViewType(): string {
@@ -60,6 +71,12 @@ export class HexMapView extends ItemView {
     return "map";
   }
 
+  private resolveAssetUrl(rel: string): string {
+    const dir = this.plugin.manifest.dir ?? "";
+    const full = dir ? `${dir}/${rel}` : rel;
+    return this.app.vault.adapter.getResourcePath(full);
+  }
+
   async onOpen(): Promise<void> {
     const root = this.containerEl.children[1] as HTMLElement;
     root.empty();
@@ -67,33 +84,50 @@ export class HexMapView extends ItemView {
 
     this.toolbar = new HexToolbar(root, {
       onTool: (t) => this.setTool(t),
-      onBiome: (b) => this.setBiome(b),
       onLayerToggle: (k) => this.toggleLayer(k),
-      onNew: () => void this.newMap(),
+      onNew: () => this.newMap(),
       onOpen: () => void this.openMap(),
       onSave: () => void this.saveMap(),
     });
 
-    this.wrapEl = root.createDiv({ cls: "hex-map-canvas-wrap" });
+    this.bodyEl = root.createDiv({ cls: "hex-map-body" });
+    this.wrapEl = this.bodyEl.createDiv({ cls: "hex-map-canvas-wrap" });
     this.canvasEl = this.wrapEl.createEl("canvas");
+    this.palette = new HexPalette(
+      this.bodyEl,
+      {
+        onBiome: (b) => this.setBiome(b),
+        onIcon: (id) => this.setIcon(id),
+        onTool: (t) => this.setTool(t),
+      },
+      this.assets
+    );
+
     this.statusEl = root.createDiv({ cls: "hex-map-status" });
 
     this.renderer = new HexRenderer(
       this.mapMeta.hexSize,
       this.mapMeta.grid.cols,
       this.mapMeta.grid.rows,
-      this.layers
+      this.layers,
+      undefined,
+      this.assets
     );
 
     this.bindCanvas();
-    this.syncToolbar();
+    this.syncUi();
     this.scheduleDraw();
-    this.setStatus("New map — paint biomes, roads, labels. Save to maps/*.hexmap.json");
+    this.setStatus("New map — pick terrain on the right, paint hexes. Save to maps/");
 
-    // Resize observer
     const ro = new ResizeObserver(() => this.scheduleDraw());
     ro.observe(this.wrapEl);
     this.register(() => ro.disconnect());
+
+    void this.assets.loadAll(allAssetPaths()).then(() => {
+      this.palette.refreshAssets(this.assets);
+      this.syncUi();
+      this.scheduleDraw();
+    });
   }
 
   async onClose(): Promise<void> {
@@ -105,7 +139,12 @@ export class HexMapView extends ItemView {
 
     this.registerDomEvent(c, "pointerdown", (e: PointerEvent) => {
       c.setPointerCapture(e.pointerId);
-      if (e.button === 1 || e.button === 2 || (e.button === 0 && e.altKey)) {
+      const wantPan =
+        this.paint.tool === "pan" ||
+        e.button === 1 ||
+        e.button === 2 ||
+        (e.button === 0 && e.altKey);
+      if (wantPan) {
         this.panning = true;
         this.lastPan = { x: e.clientX, y: e.clientY };
         return;
@@ -132,7 +171,9 @@ export class HexMapView extends ItemView {
       } else {
         const rect = c.getBoundingClientRect();
         const ax = this.renderer.screenToAxial(e.clientX - rect.left, e.clientY - rect.top);
-        this.setStatus(`q=${ax.q} r=${ax.r} · tool=${this.paint.tool} · ${this.filePath ?? "unsaved"}`);
+        this.setStatus(
+          `q=${ax.q} r=${ax.r} · tool=${this.paint.tool} · ${this.filePath ?? "unsaved"}`
+        );
       }
     });
 
@@ -169,6 +210,8 @@ export class HexMapView extends ItemView {
   }
 
   private applyAtEvent(e: PointerEvent): void {
+    if (this.paint.tool === "pan") return;
+
     const rect = this.canvasEl.getBoundingClientRect();
     const { q, r } = this.renderer.screenToAxial(e.clientX - rect.left, e.clientY - rect.top);
     if (q < 0 || r < 0 || q >= this.mapMeta.grid.cols || r >= this.mapMeta.grid.rows) return;
@@ -177,15 +220,21 @@ export class HexMapView extends ItemView {
     if (key === this.lastPaintKey) return;
     this.lastPaintKey = key;
 
-    let labelText: string | undefined;
     if (this.paint.tool === "label") {
       const existing = this.layers.getLabel(q, r) ?? "";
-      const next = window.prompt("Label text (empty to clear):", existing);
-      if (next === null) return;
-      labelText = next;
+      new LabelModal(this.app, existing, (next) => {
+        if (next === null) return;
+        if (paintCell(this.layers, q, r, this.paint, next)) {
+          this.dirty = true;
+          this.scheduleDraw();
+          this.setStatus(`Labeled ${q},${r}`);
+        }
+      }).open();
+      this.painting = false;
+      return;
     }
 
-    if (paintCell(this.layers, q, r, this.paint, labelText)) {
+    if (paintCell(this.layers, q, r, this.paint)) {
       this.dirty = true;
       this.scheduleDraw();
     }
@@ -193,27 +242,40 @@ export class HexMapView extends ItemView {
 
   private setTool(tool: PaintTool): void {
     this.paint.tool = tool;
-    if (tool === "road") this.paint.roadOn = true;
-    this.syncToolbar();
+    if (tool === "road" || tool === "river") this.paint.pathOn = true;
+    this.canvasEl.style.cursor = tool === "pan" ? "grab" : "crosshair";
+    this.syncUi();
   }
 
   private setBiome(biome: BiomeId): void {
     this.paint.biome = biome;
     this.paint.tool = "biome";
-    this.syncToolbar();
+    this.canvasEl.style.cursor = "crosshair";
+    this.syncUi();
+  }
+
+  private setIcon(iconId: string): void {
+    this.paint.icon = iconId;
+    this.paint.tool = "icon";
+    this.canvasEl.style.cursor = "crosshair";
+    this.syncUi();
   }
 
   private toggleLayer(kind: LayerKind): void {
     this.layers.toggleVisibility(kind);
-    this.syncToolbar();
+    this.syncUi();
     this.scheduleDraw();
   }
 
-  private syncToolbar(): void {
+  private syncUi(): void {
     this.toolbar.sync({
       tool: this.paint.tool,
-      biome: this.paint.biome,
       layers: { ...this.layers.visibility },
+    });
+    this.palette.sync({
+      tool: this.paint.tool,
+      biome: this.paint.biome,
+      icon: this.paint.icon,
     });
   }
 
@@ -259,41 +321,40 @@ export class HexMapView extends ItemView {
       data.grid.cols,
       data.grid.rows,
       this.layers,
-      this.renderer?.camera
+      this.renderer?.camera,
+      this.assets
     );
     this.filePath = path;
     this.dirty = false;
-    this.syncToolbar();
+    this.syncUi();
     this.scheduleDraw();
   }
 
-  async newMap(): Promise<void> {
-    const name = window.prompt("Map name:", "untitled");
-    if (!name) return;
-    const cols = Number(window.prompt("Columns:", "20") ?? "20");
-    const rows = Number(window.prompt("Rows:", "15") ?? "15");
-    const data = defaultMap(name, Number.isFinite(cols) ? cols : 20, Number.isFinite(rows) ? rows : 15);
-    this.loadData(data, null);
-    this.setStatus(`New map "${name}"`);
+  newMap(): void {
+    new NewMapModal(this.app, (result) => {
+      const data = defaultMap(result.name, result.cols, result.rows);
+      this.loadData(data, null);
+      this.setStatus(`New map "${result.name}"`);
+    }).open();
   }
 
   async openMap(): Promise<void> {
-    const files = this.app.vault
+    const hexFiles = this.app.vault
       .getFiles()
-      .filter((f) => f.path.endsWith(MAP_EXT) || f.path.includes(`${MAP_DIR}/`));
-    const hexFiles = files.filter((f) => f.path.endsWith(MAP_EXT));
+      .filter((f) => f.path.endsWith(MAP_EXT))
+      .sort((a, b) => a.path.localeCompare(b.path));
+
     if (hexFiles.length === 0) {
       new Notice(`No ${MAP_EXT} files found. Create maps under ${MAP_DIR}/`);
       return;
     }
-    const names = hexFiles.map((f) => f.path);
-    const pick = window.prompt(`Open map (enter path):\n${names.join("\n")}`, names[0]);
-    if (!pick) return;
-    const file = this.app.vault.getAbstractFileByPath(pick);
-    if (!(file instanceof TFile)) {
-      new Notice(`Not found: ${pick}`);
-      return;
-    }
+
+    new OpenMapModal(this.app, hexFiles, (file) => {
+      void this.readAndLoad(file);
+    }).open();
+  }
+
+  private async readAndLoad(file: TFile): Promise<void> {
     try {
       const raw = await this.app.vault.read(file);
       const data = deserializeMap(raw);
@@ -307,14 +368,18 @@ export class HexMapView extends ItemView {
   async saveMap(): Promise<void> {
     const data = serializeMap(this.mapMeta, this.layers);
     const body = stringifyMap(data);
-    let path = this.filePath;
-    if (!path) {
-      path = mapPath(this.mapMeta.name);
-      const choose = window.prompt("Save path:", path);
-      if (!choose) return;
-      path = choose.endsWith(MAP_EXT) ? choose : mapPath(choose.replace(/\.hexmap\.json$/i, ""));
+
+    if (this.filePath) {
+      await this.writePath(this.filePath, body);
+      return;
     }
 
+    new SaveMapModal(this.app, this.mapMeta.name, (path) => {
+      void this.writePath(path, body);
+    }).open();
+  }
+
+  private async writePath(path: string, body: string): Promise<void> {
     try {
       await this.ensureFolder(path);
       const existing = this.app.vault.getAbstractFileByPath(path);
@@ -324,6 +389,10 @@ export class HexMapView extends ItemView {
         await this.app.vault.create(path, body);
       }
       this.filePath = path;
+      this.mapMeta.name = path
+        .split("/")
+        .pop()!
+        .replace(/\.hexmap\.json$/i, "");
       this.dirty = false;
       this.setStatus(`Saved ${path}`);
       new Notice(`Saved ${path}`);

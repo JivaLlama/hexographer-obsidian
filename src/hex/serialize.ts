@@ -28,7 +28,9 @@ export function serializeMap(
 }
 
 export function deserializeMap(raw: string): HexMapData {
-  const parsed = JSON.parse(raw) as Partial<HexMapData>;
+  const parsed = JSON.parse(raw) as Partial<HexMapData> & {
+    layers?: Partial<HexMapData["layers"]>;
+  };
   if (!parsed || typeof parsed !== "object") {
     throw new Error("Invalid hexmap: not an object");
   }
@@ -48,6 +50,8 @@ export function deserializeMap(raw: string): HexMapData {
     layers: {
       biome: { ...(parsed.layers?.biome ?? {}) },
       road: { ...(parsed.layers?.road ?? {}) },
+      river: { ...(parsed.layers?.river ?? {}) },
+      icon: { ...(parsed.layers?.icon ?? {}) },
       label: { ...(parsed.layers?.label ?? {}) },
     },
   };
