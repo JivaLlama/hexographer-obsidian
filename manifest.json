@@ -1,0 +1,10 @@
+{
+  "id": "hexographer-obsidian",
+  "name": "Hexographer",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Paint hex maps in your vault — biomes, roads, and labels. Lightweight hex cartography for notes and worlds.",
+  "author": "Jim Bohan",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}
