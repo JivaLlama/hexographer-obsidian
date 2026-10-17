@@ -2,13 +2,14 @@ import {
   createCalendar,
   createScale,
   extentOf,
-  filterItems,
   GREGORIAN,
   parseTimelineConfig,
   parseTimelineNoteResult,
   RECKONING,
+  resolveDates,
   scaleLimitsForCalendar,
   zoomToFit,
+  type VaultSettings,
   type CalendarEngine,
   type FilterState,
   type Lane,
@@ -17,6 +18,7 @@ import {
   type TimelineItem,
 } from "../../../core";
 import type { ViewState } from "../store";
+import { fitSpan, itemsForView } from "./placed";
 
 /**
  * View-side dataset. The core parses one note and one config block; it does not
@@ -30,6 +32,8 @@ export interface TimelineDataset {
   config: TimelineConfig;
   origin: "vault" | "stub";
   notice?: string;
+  /** Vault units used by `resolveDates` and relative drags. */
+  settings?: VaultSettings;
 }
 
 export function readTimelineConfig(
@@ -90,7 +94,8 @@ export function buildLanes(
 export function visibleRange(
   calendar: CalendarEngine,
   items: readonly TimelineItem[],
-  view: TimelineConfig["view"]
+  view: TimelineConfig["view"],
+  ctx?: { settings?: VaultSettings; calendars?: readonly CalendarEngine[] }
 ): { from: number; to: number } {
   if (view?.from && view?.to) {
     const parsed = parseViewRange(calendar, view.from, view.to);
@@ -98,10 +103,14 @@ export function visibleRange(
   }
   const ranged = items.filter((item) => item.kind !== "era");
   const source = ranged.length > 0 ? ranged : items;
+  const notes = ctx
+    ? new Map(resolveDates(source, ctx.settings, ctx.calendars ?? [calendar]).map((note) => [note.id, note]))
+    : null;
   let min = Infinity;
   let max = -Infinity;
   for (const item of source) {
-    const extent = extentOf(item);
+    const extent = notes ? fitSpan(item, notes.get(item.id)) : extentOf(item);
+    if (!extent) continue;
     if (Number.isFinite(extent.from)) min = Math.min(min, extent.from);
     if (Number.isFinite(extent.to)) max = Math.max(max, extent.to);
   }
@@ -111,9 +120,12 @@ export function visibleRange(
 
 export function cameraForDataset(dataset: TimelineDataset, viewportPx: number, padPx = 32): ViewState {
   const width = Math.max(viewportPx, 1);
-  const filtered = filterItems(dataset.items, dataset.config.filters);
+  const filtered = itemsForView(dataset.items, dataset.config.filters, dataset.settings, dataset.calendars);
   const limits = scaleLimitsForCalendar(dataset.calendar, { viewportPx: width });
-  const range = visibleRange(dataset.calendar, filtered, dataset.config.view);
+  const range = visibleRange(dataset.calendar, filtered, dataset.config.view, {
+    settings: dataset.settings,
+    calendars: dataset.calendars,
+  });
   const scale = zoomToFit(
     createScale({ minPxPerDay: limits.minPxPerDay, maxPxPerDay: limits.maxPxPerDay }),
     range,
@@ -123,7 +135,7 @@ export function cameraForDataset(dataset: TimelineDataset, viewportPx: number, p
   return { originDays: scale.originDays, pxPerDay: scale.pxPerDay, laneScroll: 0 };
 }
 
-/** Lane, tag, and kind filters for order-only notes. Dated items use `filterItems`. */
+/** Lane, tag, and kind filters for order-only notes. Dated items use `itemsForView`. */
 export function filterOrdered(items: readonly OrderedItem[], filters: FilterState | undefined): OrderedItem[] {
   if (!filters) return [...items];
   return items.filter((item) => {

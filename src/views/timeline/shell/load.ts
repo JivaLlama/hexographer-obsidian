@@ -7,6 +7,7 @@ import {
   type VaultSettings,
 } from "../../../core";
 import { readTimelineConfig, stubDataset, type TimelineDataset } from "../scene/dataset";
+import { parseUnitsText } from "../scene/units";
 
 /**
  * Shell adapter. Obsidian file reading stays here. Parsing is `scanVault`,
@@ -51,6 +52,7 @@ export async function loadTimeline(
     calendar,
     config,
     origin: "vault",
+    settings,
     ...(joinNotice(error, queryNote, defaultNote) ? { notice: joinNotice(error, queryNote, defaultNote) } : {}),
   };
 }
@@ -114,9 +116,13 @@ function cacheHasTag(cache: CachedMetadata, wanted: Set<string>): boolean {
 }
 
 export async function vaultSettings(plugin: Plugin): Promise<VaultSettings> {
-  const data = (await plugin.loadData()) as { defaultCalendarId?: string } | null;
+  const data = (await plugin.loadData()) as { defaultCalendarId?: string; units?: string } | null;
   const id = data?.defaultCalendarId?.trim();
-  return id ? { defaultCalendarId: id } : {};
+  const units = parseUnitsText(typeof data?.units === "string" ? data.units : undefined);
+  return {
+    ...(id ? { defaultCalendarId: id } : {}),
+    ...(units ? { units } : {}),
+  };
 }
 
 /** Double-click opens the note. Ordered items use the same path as dated ones. */

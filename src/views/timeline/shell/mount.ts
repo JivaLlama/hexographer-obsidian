@@ -1,10 +1,32 @@
-import { commitPan, createScale, filterItems, scaleLimitsForCalendar, type Scale, type ScaleLimits } from "../../../core";
+import {
+  applyCommandToNote,
+  calendarForItem,
+  commitPan,
+  createScale,
+  createUndoStack,
+  planAccountMove,
+  planMove,
+  planRelativeMove,
+  resolveDates,
+  scaleLimitsForCalendar,
+  type EditCommand,
+  type Scale,
+  type ScaleLimits,
+  type TimelineItem,
+} from "../../../core";
 import { bindInteraction } from "../interaction/controller";
 import type { WheelAction } from "../interaction/wheel";
+import { anchorDaysFor } from "../scene/drag";
 import { buildLanes, cameraForDataset, filterOrdered, stubDataset, type TimelineDataset } from "../scene/dataset";
 import { beforeBandInset, layoutScene } from "../scene/layout";
+import { itemsForView } from "../scene/placed";
 import { createTimelineView, type TimelineView } from "../scene/render";
 import { createViewStore, type ViewStore } from "../store";
+
+export interface TimelineEditHost {
+  read(path: string): Promise<string>;
+  write(path: string, markdown: string): Promise<void>;
+}
 
 export interface MountOptions {
   container: HTMLElement;
@@ -14,6 +36,8 @@ export interface MountOptions {
   onOpenFull?: () => void;
   onOpenItem?: (itemId: string) => void;
   subscribeRefresh?: (listener: () => void) => () => void;
+  /** Vault read/write. Absent hosts stay read-only, including the preview. */
+  edit?: TimelineEditHost;
 }
 
 export interface TimelineMount {
@@ -28,8 +52,8 @@ const HINT_FULL = "Wheel pans time. Shift+wheel scrolls lanes. Ctrl or Cmd+wheel
 
 /**
  * DOM host shared by the code block and the full-view leaf.
- * Editing stays off: drag-move writeback is a later slice, so the pointer
- * machine is run read-only on desktop and on mobile.
+ * Desktop editing writes through `planMove`, `planRelativeMove`, and
+ * `planAccountMove`. Mobile, and any host without `edit`, stays read-only.
  */
 export function mountTimeline(options: MountOptions): TimelineMount {
   const store: ViewStore = createViewStore();
@@ -46,6 +70,19 @@ export function mountTimeline(options: MountOptions): TimelineMount {
   let hasFit = false;
   let generation = 0;
   let focused = false;
+  let drag: { id: string; dx: number } | null = null;
+  const undo = options.edit
+    ? createUndoStack({
+        applyField: async (path, key, value) => {
+          const markdown = await options.edit!.read(path);
+          const command: EditCommand = {
+            label: "Edit timeline",
+            patches: [{ path, fields: [{ key, before: null, after: value }] }],
+          };
+          await options.edit!.write(path, applyCommandToNote(markdown, command));
+        },
+      })
+    : null;
 
   const currentScale = (): Scale => {
     const camera = store.get().viewState;
@@ -63,7 +100,7 @@ export function mountTimeline(options: MountOptions): TimelineMount {
     if (width < 2) return;
     const snapshot = store.get();
     const scale = currentScale();
-    const filtered = filterItems(dataset.items, snapshot.filters);
+    const filtered = itemsForView(dataset.items, snapshot.filters, dataset.settings, dataset.calendars);
     const ordered = filterOrdered(dataset.ordered, snapshot.filters);
     const model = layoutScene({
       items: filtered,
@@ -78,6 +115,9 @@ export function mountTimeline(options: MountOptions): TimelineMount {
       overscanPx: width,
       minLabelPx: 72,
       selection: snapshot.selection,
+      settings: dataset.settings,
+      ...(snapshot.filters.accounts !== undefined ? { accounts: snapshot.filters.accounts } : {}),
+      ...(snapshot.filters.cultures ? { cultures: snapshot.filters.cultures } : {}),
     });
     view.render(model);
     datedInset = model.before?.width ?? 0;
@@ -87,7 +127,7 @@ export function mountTimeline(options: MountOptions): TimelineMount {
   const datedWidth = (width: number): number => {
     if (!dataset) return width;
     const snapshot = store.get();
-    const items = filterItems(dataset.items, snapshot.filters);
+    const items = itemsForView(dataset.items, snapshot.filters, dataset.settings, dataset.calendars);
     const inset = beforeBandInset(
       filterOrdered(dataset.ordered, snapshot.filters),
       items.filter((item) => item.kind === "era"),
@@ -102,7 +142,9 @@ export function mountTimeline(options: MountOptions): TimelineMount {
       return;
     }
     const filters = store.get().filters;
-    const count = filterItems(dataset.items, filters).length + filterOrdered(dataset.ordered, filters).length;
+    const count =
+      itemsForView(dataset.items, filters, dataset.settings, dataset.calendars).length +
+      filterOrdered(dataset.ordered, filters).length;
     const source = dataset.origin === "stub" ? "Sample dates" : dataset.calendar.def.name;
     const text = dataset.notice ? `${source} · ${dataset.notice}` : `${source} · ${count} items`;
     view.setStatus(text, options.surface === "inline" ? HINT_INLINE : HINT_FULL);
@@ -154,7 +196,7 @@ export function mountTimeline(options: MountOptions): TimelineMount {
   const unbind = bindInteraction(view, {
     surface: options.surface,
     isFocused: () => focused,
-    isReadOnly: () => true,
+    isReadOnly: () => options.mobile || !options.edit,
     onPan(dx, dy) {
       onPanPixels(dx);
       if (dy !== 0) view.scrollLanesBy(-dy);
@@ -164,8 +206,13 @@ export function mountTimeline(options: MountOptions): TimelineMount {
       if (effect.dy !== 0) view.scrollLanesBy(-effect.dy);
       zoomAt(effect.focusX, effect.factor);
     },
-    onDrag() {
-      // Reserved for C11. The machine can enter drag; this host does not write back.
+    onDrag(effect) {
+      if (!dataset || !options.edit) return;
+      if (!drag || drag.id !== effect.itemId) drag = { id: effect.itemId, dx: 0 };
+      drag.dx += effect.dx;
+      const px = currentScale().pxPerDay;
+      if (!(px > 0)) return;
+      view.setDragTip(dragPreview(dataset, effect.itemId, drag.dx / px));
     },
     onHover(itemId) {
       store.setHover(itemId);
@@ -175,13 +222,17 @@ export function mountTimeline(options: MountOptions): TimelineMount {
       renderScene();
     },
     onOpenItem(itemId) {
-      options.onOpenItem?.(itemId);
+      options.onOpenItem?.(noteIdFromHit(itemId));
     },
     onDoubleTap(x) {
       zoomAt(x, ZOOM_STEP);
     },
     onGestureEnd() {
+      const pending = drag;
+      drag = null;
+      view.setDragTip(null);
       if (translateX !== 0) commitTranslate();
+      if (pending && pending.dx !== 0) void commitDrag(pending.id, pending.dx);
     },
     onWheel(action: WheelAction) {
       if (action.type === "zoom") zoomAt(action.focusX, action.factor);
@@ -203,6 +254,14 @@ export function mountTimeline(options: MountOptions): TimelineMount {
     if (camera.laneScroll === view.laneScroll()) return;
     store.setViewState({ ...camera, laneScroll: view.laneScroll() });
   };
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (!undo || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") return;
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+    event.preventDefault();
+    void (event.shiftKey ? undo.redo() : undo.undo()).then(() => reload({ fit: false }));
+  };
+  view.root.addEventListener("keydown", onKeyDown);
+
   view.body.addEventListener("scroll", onScroll, { passive: true });
 
   const observer = new ResizeObserver(() => {
@@ -234,10 +293,18 @@ export function mountTimeline(options: MountOptions): TimelineMount {
     if (token !== generation) return;
     const becameReal = previousOrigin === "stub" && loaded.origin === "vault";
     dataset = loaded;
+    const previousAccounts = store.get().filters.accounts;
+    const configFilters = dataset.config.filters ?? {};
+    const keepAccounts = reloadOptions?.fit === false && previousAccounts !== undefined;
+    store.setFilters(keepAccounts ? { ...configFilters, accounts: previousAccounts } : configFilters);
+    view.setAccounts(accountCultures(dataset.items), store.get().filters.accounts, (next) => {
+      store.setFilters({ ...store.get().filters, accounts: next });
+      renderScene();
+      publishStatus();
+    });
     const width = view.sceneWidth();
     const limitWidth = width >= 2 ? width : 320;
     limits = scaleLimitsForCalendar(dataset.calendar, { viewportPx: limitWidth });
-    store.setFilters(dataset.config.filters ?? {});
     const shouldFit = becameReal || (reloadOptions?.fit !== false && (reloadOptions?.fit === true || !hasFit));
     if (shouldFit && width >= 2) {
       const camera = cameraForDataset(dataset, datedWidth(width));
@@ -266,6 +333,29 @@ export function mountTimeline(options: MountOptions): TimelineMount {
     renderScene();
   }
 
+  async function commitDrag(id: string, dx: number): Promise<void> {
+    if (!dataset || !options.edit || !undo) return;
+    const px = currentScale().pxPerDay;
+    if (!(px > 0) || dx === 0) return;
+    const deltaDays = dx / px;
+    const parts = hitParts(id);
+    const item = dataset.items.find((entry) => entry.id === parts.noteId);
+    if (!item || item.parseError) return;
+    let command: EditCommand | null = null;
+    try {
+      command = planDrag(dataset, item, parts, deltaDays);
+    } catch {
+      return;
+    }
+    if (!command || command.patches.length === 0) return;
+    undo.push(command);
+    for (const patch of command.patches) {
+      const markdown = await options.edit.read(patch.path);
+      await options.edit.write(patch.path, applyCommandToNote(markdown, { label: command.label, patches: [patch] }));
+    }
+    await reload({ fit: false });
+  }
+
   void reload({ fit: true });
 
   return {
@@ -274,9 +364,96 @@ export function mountTimeline(options: MountOptions): TimelineMount {
       generation += 1;
       observer.disconnect();
       view.body.removeEventListener("scroll", onScroll);
+      view.root.removeEventListener("keydown", onKeyDown);
       unbind();
       unsubscribe?.();
-      view.destroy();
-    },
+    view.destroy();
+  },
+};
+}
+
+function accountCultures(items: readonly TimelineItem[]): string[] {
+  const seen = new Set<string>();
+  const list: string[] = [];
+  const add = (value: string | undefined): void => {
+    if (!value) return;
+    const key = value.trim().toLowerCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    list.push(value);
   };
+  for (const item of items) {
+    for (const account of item.accounts ?? []) add(account.by);
+  }
+  return list;
+}
+
+function hitParts(id: string): { noteId: string; accountIndex: number | null; noteGhost: boolean } {
+  const mark = id.lastIndexOf("#");
+  if (mark < 0) return { noteId: id, accountIndex: null, noteGhost: false };
+  const suffix = id.slice(mark + 1);
+  if (suffix === "primary") return { noteId: id.slice(0, mark), accountIndex: null, noteGhost: true };
+  if (/^\d+$/.test(suffix)) return { noteId: id.slice(0, mark), accountIndex: Number(suffix), noteGhost: false };
+  return { noteId: id, accountIndex: null, noteGhost: false };
+}
+
+function noteIdFromHit(id: string): string {
+  return hitParts(id).noteId;
+}
+
+function dragPreview(dataset: TimelineDataset, id: string, deltaDays: number): string | null {
+  try {
+    const parts = hitParts(id);
+    const item = dataset.items.find((entry) => entry.id === parts.noteId);
+    if (!item) return null;
+    if (parts.accountIndex !== null) {
+      const account = item.accounts?.[parts.accountIndex];
+      const calendar = account && dataset.calendars.find((engine) => engine.def.id === account.calendarId);
+      if (!account || !calendar) return null;
+      const plan = planAccountMove(item, parts.accountIndex, deltaDays, "move", { fine: false, calendar });
+      return plan.endRaw ? `${plan.startRaw} – ${plan.endRaw}` : plan.startRaw;
+    }
+    if (item.relations && item.relations.length > 0) {
+      const notes = resolveDates(dataset.items, dataset.settings, dataset.calendars);
+      const calendar = calendarForItem(item, dataset.calendars);
+      const plan = planRelativeMove(item, deltaDays, {
+        calendar,
+        units: dataset.settings?.units,
+        anchorDays: anchorDaysFor(item, dataset.items, notes),
+      });
+      return plan.gap;
+    }
+    if (!item.source.startRaw.trim()) return null;
+    const calendar = calendarForItem(item, dataset.calendars);
+    const plan = planMove(item, deltaDays, "move", { fine: false, calendar });
+    return plan.endRaw ? `${plan.startRaw} – ${plan.endRaw}` : plan.startRaw;
+  } catch {
+    return null;
+  }
+}
+
+function planDrag(
+  dataset: TimelineDataset,
+  item: TimelineItem,
+  parts: { accountIndex: number | null },
+  deltaDays: number
+): EditCommand | null {
+  if (parts.accountIndex !== null) {
+    const account = item.accounts?.[parts.accountIndex];
+    const calendar = account && dataset.calendars.find((engine) => engine.def.id === account.calendarId);
+    if (!account || !calendar) return null;
+    return planAccountMove(item, parts.accountIndex, deltaDays, "move", { fine: false, calendar }).command;
+  }
+  if (item.relations && item.relations.length > 0) {
+    const notes = resolveDates(dataset.items, dataset.settings, dataset.calendars);
+    const calendar = calendarForItem(item, dataset.calendars);
+    return planRelativeMove(item, deltaDays, {
+      calendar,
+      units: dataset.settings?.units,
+      anchorDays: anchorDaysFor(item, dataset.items, notes),
+    }).command;
+  }
+  if (!item.source.startRaw.trim()) return null;
+  const calendar = calendarForItem(item, dataset.calendars);
+  return planMove(item, deltaDays, "move", { fine: false, calendar }).command;
 }

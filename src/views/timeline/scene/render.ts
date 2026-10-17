@@ -26,6 +26,12 @@ export interface TimelineView {
   scrollLanesBy(dy: number): void;
   laneScroll(): number;
   render(model: SceneModel): void;
+  setAccounts(
+    cultures: readonly string[],
+    value: boolean | string[] | undefined,
+    onChange: (next: boolean | string[]) => void
+  ): void;
+  setDragTip(text: string | null): void;
   destroy(): void;
 }
 
@@ -102,7 +108,7 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
   sceneWrap.append(scene);
   body.append(laneCol, sceneWrap);
   frame.append(axis, body);
-  root.append(chrome.toolbar, frame);
+  root.append(chrome.toolbar, chrome.notices, frame);
   container.replaceChildren(root);
 
   let translateX = 0;
@@ -151,6 +157,12 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
     laneScroll() {
       return body.scrollTop;
     },
+    setAccounts(cultures, value, onChange) {
+      chrome.setAccounts(cultures, value, onChange);
+    },
+    setDragTip(text) {
+      chrome.setDragTip(text);
+    },
     render(model) {
       const width = Math.max(model.viewportWidth, view.sceneWidth());
       const height = Math.max(model.contentHeight, 1);
@@ -167,6 +179,11 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
       items.replaceChildren();
       beforeLayer.replaceChildren();
       ghost.replaceChildren();
+      for (let index = defs.childNodes.length - 1; index >= 0; index--) {
+        const node = defs.childNodes.item(index);
+        if (node && node !== clip) defs.removeChild(node);
+      }
+      chrome.setNotices(model.errors, model.warnings);
       axisTrack.replaceChildren();
       laneCol.replaceChildren();
 
@@ -263,10 +280,23 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
           group.setAttribute("data-ordered", "true");
         }
         group.setAttribute("aria-label", item.title);
+        if (item.ghost) group.classList.add(WT_CLASS.ghost);
+        if (item.locked) group.setAttribute("data-locked", "true");
+        if (item.accountIndex !== undefined) group.setAttribute("data-account-index", String(item.accountIndex));
         if (item.color) group.style.setProperty(WT_VAR.itemFill, item.color);
         const tip = svgEl("title");
         tip.textContent = item.tooltip;
         group.append(tip);
+
+        const fadeColor = item.color || fillColor(root);
+        const fadeY = item.shape === "point" ? item.y + item.height / 2 - 5 : item.y;
+        const fadeH = item.shape === "point" ? 10 : item.height;
+        if (item.featherLead && item.featherLead.width > 0.5) {
+          group.append(featherRect(defs, item.featherLead, fadeY, fadeH, fadeColor, "lead"));
+        }
+        if (item.featherTrail && item.featherTrail.width > 0.5) {
+          group.append(featherRect(defs, item.featherTrail, fadeY, fadeH, fadeColor, "trail"));
+        }
 
         if (item.bracket) {
           const bracket = svgEl("rect");
@@ -327,8 +357,19 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
           badge.append(title);
           group.append(badge);
         }
+        if (item.warning) {
+          const badge = svgEl("circle");
+          badge.setAttribute("class", "wt-warning-badge");
+          badge.setAttribute("cx", round(item.x - 6));
+          badge.setAttribute("cy", round(item.y + 4));
+          badge.setAttribute("r", "4");
+          const title = svgEl("title");
+          title.textContent = item.warning;
+          badge.append(title);
+          group.append(badge);
+        }
 
-        (item.pinned ? beforeLayer : items).append(group);
+        (item.pinned ? beforeLayer : item.ghost ? ghost : items).append(group);
       }
 
       for (const tick of model.ticks) {
@@ -362,6 +403,58 @@ function svgEl<K extends keyof SVGElementTagNameMap>(name: K): SVGElementTagName
 function round(value: number): string {
   if (!Number.isFinite(value)) return "0";
   return String(Math.round(value * 10) / 10);
+}
+
+let fadeSerial = 0;
+
+function featherRect(
+  defs: SVGDefsElement,
+  box: { x: number; width: number },
+  y: number,
+  height: number,
+  color: string,
+  edge: "lead" | "trail"
+): SVGRectElement {
+  const id = `wt-fade-${fadeSerial++}`;
+  const grad = svgEl("linearGradient");
+  grad.id = id;
+  grad.setAttribute("gradientUnits", "objectBoundingBox");
+  grad.setAttribute("x1", "0");
+  grad.setAttribute("x2", "1");
+  grad.setAttribute("y1", "0");
+  grad.setAttribute("y2", "0");
+  const start = svgEl("stop");
+  const end = svgEl("stop");
+  start.setAttribute("stop-color", color);
+  end.setAttribute("stop-color", color);
+  if (edge === "lead") {
+    start.setAttribute("offset", "0");
+    start.setAttribute("stop-opacity", "0");
+    end.setAttribute("offset", "1");
+    end.setAttribute("stop-opacity", "0.9");
+  } else {
+    start.setAttribute("offset", "0");
+    start.setAttribute("stop-opacity", "0.9");
+    end.setAttribute("offset", "1");
+    end.setAttribute("stop-opacity", "0");
+  }
+  grad.append(start, end);
+  defs.append(grad);
+  const rect = svgEl("rect");
+  rect.setAttribute("class", "wt-feather");
+  rect.setAttribute("x", round(box.x));
+  rect.setAttribute("y", round(y));
+  rect.setAttribute("width", round(Math.max(box.width, 1)));
+  rect.setAttribute("height", round(height));
+  rect.setAttribute("fill", `url(#${id})`);
+  rect.setAttribute("stroke", "none");
+  return rect;
+}
+
+function fillColor(root: HTMLElement): string {
+  const raw = getComputedStyle(root).getPropertyValue("--wt-item-fill").trim();
+  if (raw && !raw.startsWith("var(")) return raw;
+  return "#7c6af7";
 }
 
 function fitLabel(title: string, width: number): string {

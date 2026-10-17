@@ -1,4 +1,4 @@
-import { ItemView, Platform, type Plugin, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
+import { ItemView, Platform, TFile, type Plugin, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { WORLD_TIMELINE_VIEW, readLeafState, type TimelineLeafState } from "./constants";
 import { loadTimeline, openTimelineNote, vaultSettings } from "./load";
 import { mountTimeline, type TimelineMount } from "./mount";
@@ -55,6 +55,13 @@ export class TimelineItemView extends ItemView {
         void openTimelineNote(this.plugin, itemId, this.leafState.sourcePath);
       },
       subscribeRefresh: (listener) => this.bus.subscribe(listener),
+      edit: {
+        read: (path) => this.app.vault.adapter.read(path),
+        write: async (path, markdown) => {
+          const file = this.app.vault.getAbstractFileByPath(path);
+          if (file instanceof TFile) await this.app.vault.modify(file, markdown);
+        },
+      },
     });
   }
 

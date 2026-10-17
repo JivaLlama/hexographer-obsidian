@@ -153,7 +153,7 @@ function pointerInput(
     button: event.button,
     pointerType: kind,
     itemId: phase === "down" ? hitItem(event.target) : null,
-    readOnly: host.isReadOnly() || (phase === "down" && hitOrdered(event.target)),
+    readOnly: host.isReadOnly() || (phase === "down" && (hitOrdered(event.target) || hitLocked(event.target))),
   };
 }
 
@@ -161,6 +161,12 @@ function hitOrdered(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
   const owner = target.closest("[data-id]");
   return owner?.getAttribute("data-ordered") === "true";
+}
+
+function hitLocked(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  const owner = target.closest("[data-id]");
+  return owner?.getAttribute("data-locked") === "true";
 }
 
 function hitItem(target: EventTarget | null): string | null {

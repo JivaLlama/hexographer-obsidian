@@ -475,23 +475,23 @@
   pointer-events: auto;
 }
 
-.wt-item[data-certainty="locked"] rect:not(.wt-bracket),
+.wt-item[data-certainty="locked"] rect:not(.wt-bracket):not(.wt-feather),
 .wt-item[data-certainty="locked"] polygon {
   opacity: var(--wt-certainty-locked);
 }
 
-.wt-item[data-certainty="working"] rect:not(.wt-bracket),
+.wt-item[data-certainty="working"] rect:not(.wt-bracket):not(.wt-feather),
 .wt-item[data-certainty="working"] polygon {
   opacity: var(--wt-certainty-working);
 }
 
-.wt-item[data-certainty="uncertain"] rect:not(.wt-bracket),
+.wt-item[data-certainty="uncertain"] rect:not(.wt-bracket):not(.wt-feather),
 .wt-item[data-certainty="uncertain"] polygon {
   opacity: var(--wt-certainty-uncertain);
   stroke-dasharray: 4 3;
 }
 
-.wt-item[data-certainty="open"] rect:not(.wt-bracket),
+.wt-item[data-certainty="open"] rect:not(.wt-bracket):not(.wt-feather),
 .wt-item[data-certainty="open"] polygon {
   fill: transparent;
   stroke: var(--wt-item-fill);
@@ -537,11 +537,32 @@
   left: 84px;
 }
 
-.wt-item rect:not(.wt-bracket) {
+.wt-item rect:not(.wt-bracket):not(.wt-feather) {
   fill: var(--wt-item-fill);
   stroke: var(--wt-item-stroke);
   stroke-width: 1;
   rx: var(--wt-item-radius);
+}
+
+.wt-item .wt-feather {
+  stroke: none;
+  pointer-events: none;
+}
+
+.wt-item.wt-ghost rect:not(.wt-feather):not(.wt-bracket),
+.wt-item.wt-ghost polygon {
+  fill: transparent;
+  stroke: var(--wt-item-fill);
+  stroke-dasharray: 4 3;
+  opacity: 0.55;
+}
+
+.wt-item.wt-ghost text {
+  opacity: 0.7;
+}
+
+.wt-item.wt-ghost .wt-feather {
+  opacity: 0.7;
 }
 
 .wt-item polygon {
@@ -567,6 +588,70 @@
 .wt-error-badge {
   fill: var(--wt-error-badge);
   stroke: none;
+}
+
+.wt-warning-badge {
+  fill: var(--text-warning, #e6a23c);
+  stroke: none;
+}
+
+.wt-notices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--background-primary);
+}
+
+.wt-error-chip,
+.wt-warning-chip {
+  font-size: 12px;
+  line-height: 16px;
+  padding: 2px 6px;
+  border-radius: var(--radius-s, 4px);
+  background: var(--background-secondary);
+}
+
+.wt-error-chip {
+  color: var(--text-error, #e06c75);
+}
+
+.wt-warning-chip {
+  color: var(--text-warning, #e6a23c);
+}
+
+.wt-accounts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.wt-accounts-mode,
+.wt-accounts-culture {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 4px);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: 12px;
+}
+
+.wt-accounts-mode[aria-pressed="true"] {
+  border-color: var(--interactive-accent, #7c6af7);
+  color: var(--text-normal);
+}
+
+.wt-drag-tip {
+  font-size: 12px;
+  color: var(--text-normal);
+  white-space: nowrap;
 }
 
 .wt-timeline.is-panning,

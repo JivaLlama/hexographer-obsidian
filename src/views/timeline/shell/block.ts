@@ -1,4 +1,4 @@
-import { MarkdownRenderChild, Platform, type Plugin } from "obsidian";
+import { MarkdownRenderChild, Platform, TFile, type Plugin } from "obsidian";
 import type { TimelineLeafState } from "./constants";
 import { loadTimeline, openTimelineNote, vaultSettings } from "./load";
 import { mountTimeline, type TimelineMount } from "./mount";
@@ -38,6 +38,13 @@ class TimelineBlock extends MarkdownRenderChild {
         void openTimelineNote(this.plugin, itemId, this.sourcePath);
       },
       subscribeRefresh: (listener) => this.bus.subscribe(listener),
+      edit: {
+        read: (path) => this.plugin.app.vault.adapter.read(path),
+        write: async (path, markdown) => {
+          const file = this.plugin.app.vault.getAbstractFileByPath(path);
+          if (file instanceof TFile) await this.plugin.app.vault.modify(file, markdown);
+        },
+      },
     });
   }
 

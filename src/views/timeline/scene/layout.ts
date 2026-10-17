@@ -5,6 +5,7 @@ import {
   formatYearsAgo,
   groupOrderedItems,
   packLanes,
+  type Bar,
   type CalendarEngine,
   type Certainty,
   type ItemKind,
@@ -12,8 +13,21 @@ import {
   type OrderedItem,
   type Scale,
   type TimelineItem,
+  type VaultSettings,
 } from "../../../core";
 import { layoutTicks, type AxisTick } from "./axis";
+import {
+  boundsSpan,
+  barDateTooltip,
+  boundsTooltip,
+  cultureForItem,
+  ghostSpan,
+  prepareDated,
+  writtenStart,
+  type DatedEntry,
+  type DrawSpan,
+  type NoticeChip,
+} from "./placed";
 
 const ROW_GAP = 4;
 const LANE_PAD = 8;
@@ -64,6 +78,19 @@ export interface ItemBox {
   color?: string;
   parseError?: string;
   selected: boolean;
+  /** Fuzzy edge before the solid core, in scene pixels. */
+  featherLead?: { x: number; width: number };
+  /** Fuzzy edge after the solid core, in scene pixels. */
+  featherTrail?: { x: number; width: number };
+  /** Unresolved-anchor warning. The item is drawn when bounds exist. */
+  warning?: string;
+  /** Account or swapped-note bar. Not packed by `packLanes`. */
+  ghost?: boolean;
+  accountIndex?: number;
+  by?: string;
+  claim?: string;
+  /** Parse error, or no movable date. The pointer machine will not drag it. */
+  locked?: boolean;
 }
 
 export interface EraBox {
@@ -86,6 +113,10 @@ export interface SceneModel {
   overscanPx: number;
   /** Fixed band at the left edge when ordered items have no dated era. */
   before: { width: number; label: string } | null;
+  /** Cycles and parse errors. Cycles are not drawn on the axis. */
+  errors: NoticeChip[];
+  /** Notes with a warning and no bounds, such as an unresolved anchor. */
+  warnings: NoticeChip[];
 }
 
 export interface SceneLayoutInput {
@@ -106,6 +137,12 @@ export interface SceneLayoutInput {
    * of the item font. Tests omit it and get a stable per-character estimate.
    */
   labelWidth?: (title: string) => number;
+  /** Vault units for `resolveDates`. Omitted units leave custom gaps unresolved. */
+  settings?: VaultSettings;
+  /** Which ghost bars to draw. `true` is every account; a list matches `by`. */
+  accounts?: boolean | string[];
+  /** Culture timeline. The first matching account becomes the primary bar. */
+  cultures?: readonly string[];
 }
 
 /** Diamond radius. Shared with the renderer so the reserved label start matches the mark. */
@@ -205,20 +242,32 @@ function layoutSceneAt(input: SceneLayoutInput, inset: number): SceneModel {
   const right = width + overscan;
   const itemHeight = Math.max(input.itemHeight, 1);
   const measure = input.labelWidth ?? estimateLabelPx;
-  // labelExtent is a world-day interval. packLanes unions it with extentOf.
-  // Points reserve the title and the hint. Bars reserve whichever of those
-  // does not fit inside the bar. Drawn marks stay on the real extent.
-  const packed = packLanes(input.items, input.lanes, {
-    labelExtent(item) {
-      return labelReach(item, itemHeight, input.scale.pxPerDay, measure);
-    },
+  const prepared = prepareDated(input.items, input.settings, input.calendars ?? [input.calendar], {
+    ...(input.accounts !== undefined ? { accounts: input.accounts } : {}),
+    cultureFor: (item) => cultureForItem(item, input.cultures ? { cultures: [...input.cultures] } : undefined),
   });
+  const entryById = new Map(prepared.entries.map((entry) => [entry.item.id, entry]));
+  // labelExtent is a world-day interval. packLanes unions it with extentOf.
+  // Exact written dates reserve the title the way they always have.
+  // Relative and fuzzy notes reserve the resolved span, not item.start.
+  const packed = packLanes(
+    prepared.entries.map((entry) => entry.packItem),
+    input.lanes,
+    {
+      labelExtent(item) {
+        const entry = entryById.get(item.id);
+        if (!entry || entry.native) return labelReach(entry?.item ?? item, itemHeight, input.scale.pxPerDay, measure);
+        return spanLabelReach(entry, itemHeight, input.scale.pxPerDay, measure);
+      },
+    }
+  );
+  const ghosts = assignGhostRows(prepared.entries, packed.rows, scale, itemHeight, measure);
 
   const datedRows = new Map<string, number>();
-  for (const item of input.items) {
-    if (item.kind === "era") continue;
-    const laneId = item.laneId ?? "";
-    const row = (packed.rows.get(item.id) ?? 0) + 1;
+  for (const entry of prepared.entries) {
+    const laneId = entry.item.laneId ?? "";
+    let row = (packed.rows.get(entry.item.id) ?? 0) + 1;
+    for (const ghost of ghosts.get(entry.item.id) ?? []) row = Math.max(row, ghost.row + 1);
     datedRows.set(laneId, Math.max(datedRows.get(laneId) ?? 0, row));
   }
 
@@ -240,9 +289,8 @@ function layoutSceneAt(input: SceneLayoutInput, inset: number): SceneModel {
     flags[row] = true;
     rowHints.set(laneId, flags);
   };
-  for (const item of input.items) {
-    if (item.kind === "era") continue;
-    noteHint(item.laneId ?? "", packed.rows.get(item.id) ?? 0, item.displayHint);
+  for (const entry of prepared.entries) {
+    noteHint(entry.item.laneId ?? "", packed.rows.get(entry.item.id) ?? 0, entry.item.displayHint);
   }
   for (const mark of ordered.marks) {
     const laneId = mark.item.laneId ?? "";
@@ -275,27 +323,65 @@ function layoutSceneAt(input: SceneLayoutInput, inset: number): SceneModel {
   const eraBoxes: EraBox[] = [];
 
   for (const item of input.items) {
-    if (item.kind === "era") {
-      const band = placeEra(item, scale, left, right, origin);
-      if (band) eraBoxes.push(band);
-      continue;
-    }
-    const laneId = item.laneId ?? "";
+    if (item.kind !== "era") continue;
+    const band = placeEra(item, scale, left, right, origin, prepared.notes.get(item.id));
+    if (band) eraBoxes.push(band);
+  }
+
+  for (const entry of prepared.entries) {
+    const laneId = entry.item.laneId ?? "";
     const lane = laneY.get(laneId);
-    const slot = plans.get(laneId)?.[packed.rows.get(item.id) ?? 0];
+    const slot = plans.get(laneId)?.[packed.rows.get(entry.item.id) ?? 0];
     if (!lane || !slot) continue;
-    const placed = placeItem(
-      item,
-      input.calendar,
-      scale,
-      lane.y + LANE_PAD + slot.offset,
-      itemHeight,
-      left,
-      right,
-      selected.has(item.id),
-      measure
-    );
-    if (placed) items.push(placed);
+    const y = lane.y + LANE_PAD + slot.offset;
+    const placed = entry.native
+      ? placeItem(entry.item, input.calendar, scale, y, itemHeight, left, right, selected.has(entry.item.id), measure)
+      : placeFromSpan(
+          entry.item,
+          entry.span,
+          entry.note,
+          input.calendar,
+          scale,
+          y,
+          itemHeight,
+          left,
+          right,
+          selected.has(entry.item.id) || selected.has(entry.bars.primary.id),
+          measure
+        );
+    if (placed) {
+      if (entry.warning) placed.warning = entry.warning;
+      if (entry.item.parseError) placed.locked = true;
+      const primary = entry.bars.primary;
+      if (primary.accountIndex !== undefined) {
+        placed.id = primary.id;
+        placed.accountIndex = primary.accountIndex;
+        placed.tooltip = barDateTooltip(entry.item, input.calendar, entry.span, {
+          ...(primary.culture ? { by: primary.culture } : {}),
+          ...(primary.claim ? { claim: primary.claim } : {}),
+        });
+        if (primary.culture) placed.by = primary.culture;
+        if (primary.claim) placed.claim = primary.claim;
+      }
+      items.push(placed);
+    }
+    for (const ghost of ghosts.get(entry.item.id) ?? []) {
+      const ghostSlot = plans.get(laneId)?.[ghost.row];
+      if (!lane || !ghostSlot) continue;
+      const box = placeGhost(
+        entry,
+        ghost,
+        input.calendar,
+        scale,
+        lane.y + LANE_PAD + ghostSlot.offset,
+        itemHeight,
+        left,
+        right,
+        selected.has(ghost.bar.id),
+        measure
+      );
+      if (box) items.push(box);
+    }
   }
   assignLabels(items, measure);
 
@@ -322,6 +408,8 @@ function layoutSceneAt(input: SceneLayoutInput, inset: number): SceneModel {
     viewportWidth: width,
     overscanPx: overscan,
     before: ordered.before,
+    errors: prepared.errors,
+    warnings: prepared.warnings,
   };
 }
 
@@ -354,6 +442,111 @@ function shiftScale(scale: Scale, inset: number): Scale {
       return scale.toDays(px - inset);
     },
   };
+}
+
+interface GhostSeat {
+  bar: Bar;
+  span: DrawSpan;
+  row: number;
+}
+
+function assignGhostRows(
+  entries: readonly DatedEntry[],
+  rows: ReadonlyMap<string, number>,
+  scale: Scale,
+  itemHeight: number,
+  measure: (title: string) => number
+): Map<string, GhostSeat[]> {
+  const occupied = new Map<string, Map<number, { from: number; to: number }[]>>();
+  const seats = new Map<string, GhostSeat[]>();
+
+  const add = (laneId: string, row: number, span: { from: number; to: number }): void => {
+    let lane = occupied.get(laneId);
+    if (!lane) {
+      lane = new Map();
+      occupied.set(laneId, lane);
+    }
+    const list = lane.get(row) ?? [];
+    list.push(span);
+    lane.set(row, list);
+  };
+  const overlaps = (laneId: string, row: number, span: { from: number; to: number }): boolean => {
+    const list = occupied.get(laneId)?.get(row) ?? [];
+    return list.some((other) => other.from < span.to && span.from < other.to);
+  };
+
+  for (const entry of entries) {
+    const row = rows.get(entry.item.id) ?? 0;
+    add(entry.item.laneId ?? "", row, pixelOccupancy(entry.span, entry.item.title, entry.item.displayHint, scale, itemHeight, measure));
+  }
+
+  for (const entry of entries) {
+    const laneId = entry.item.laneId ?? "";
+    const base = rows.get(entry.item.id) ?? 0;
+    const placed: GhostSeat[] = [];
+    for (const bar of entry.bars.ghosts) {
+      const span = ghostSpan(entry.item, entry.note, bar);
+      if (!span) continue;
+      const label = bar.culture?.trim() || entry.item.title;
+      const pixels = pixelOccupancy(span, label, undefined, scale, itemHeight, measure);
+      let row = base;
+      while (overlaps(laneId, row, pixels)) row += 1;
+      add(laneId, row, pixels);
+      placed.push({ bar, span, row });
+    }
+    if (placed.length > 0) seats.set(entry.item.id, placed);
+  }
+  return seats;
+}
+
+function pixelOccupancy(
+  span: DrawSpan,
+  title: string,
+  hint: string | undefined,
+  scale: Scale,
+  itemHeight: number,
+  measure: (title: string) => number
+): { from: number; to: number } {
+  const titlePx = measure(title);
+  const hintPx = hint ? measure(hint) : 0;
+  const minX = scale.toPx(span.min);
+  const maxX = scale.toPx(Math.max(span.max, span.coreTo, span.coreFrom));
+  if (span.point) {
+    const x = scale.toPx(span.coreFrom);
+    const right = x + pointMarkPad(itemHeight) + Math.max(titlePx, hintPx) + LABEL_GAP;
+    return { from: Math.min(minX, x - pointRadius(itemHeight)), to: Math.max(maxX, right) };
+  }
+  const corePx = Math.max(scale.toPx(span.coreTo) - scale.toPx(span.coreFrom), 0);
+  const inner = corePx - LABEL_TEXT_PAD * 2;
+  let right = maxX;
+  if (titlePx > inner) right = Math.max(right, scale.toPx(span.coreTo) + LABEL_TEXT_PAD + titlePx + LABEL_GAP);
+  if (hintPx > inner) right = Math.max(right, scale.toPx(span.coreFrom) + LABEL_TEXT_PAD + hintPx + LABEL_GAP);
+  return { from: minX, to: right };
+}
+
+function spanLabelReach(
+  entry: DatedEntry,
+  itemHeight: number,
+  pxPerDay: number,
+  measure: (title: string) => number
+): { from: number; to: number } | null {
+  if (!(pxPerDay > 0)) return null;
+  const span = entry.span;
+  const titlePx = measure(entry.item.title);
+  const hintPx = entry.item.displayHint ? measure(entry.item.displayHint) : 0;
+  if (span.point) {
+    const reachDays = (pointMarkPad(itemHeight) + Math.max(titlePx, hintPx) + LABEL_GAP) / pxPerDay;
+    const from = Math.min(span.min, span.coreFrom);
+    const to = Math.max(span.max, span.packTo, span.coreFrom + reachDays);
+    return to > from ? { from, to } : null;
+  }
+  const barPx = Math.max(span.coreTo - span.coreFrom, 0) * pxPerDay;
+  const inner = barPx - LABEL_TEXT_PAD * 2;
+  let endPx = Math.max(span.packTo - span.min, span.coreTo - span.min) * pxPerDay;
+  if (titlePx > inner) endPx = Math.max(endPx, (span.coreTo - span.min) * pxPerDay + LABEL_TEXT_PAD + titlePx + LABEL_GAP);
+  if (hintPx > inner) endPx = Math.max(endPx, LABEL_TEXT_PAD + hintPx + LABEL_GAP);
+  if (!(endPx > 0)) return null;
+  return { from: span.min, to: span.min + endPx / pxPerDay };
 }
 
 function labelReach(
@@ -641,8 +834,136 @@ function leadingEdge(item: ItemBox): number {
   return item.x;
 }
 
-function placeEra(item: TimelineItem, scale: Scale, left: number, right: number, inset: number): EraBox | null {
-  const extent = extentOf(item);
+function placeFromSpan(
+  item: TimelineItem,
+  span: DrawSpan,
+  note: DatedEntry["note"],
+  calendar: CalendarEngine,
+  scale: Scale,
+  y: number,
+  height: number,
+  left: number,
+  right: number,
+  selected: boolean,
+  measure: (title: string) => number
+): ItemBox | null {
+  const occupancy = pixelOccupancy(span, item.title, item.displayHint, scale, height, measure);
+  if (occupancy.to < left || occupancy.from > right) return null;
+  const feathers = featherPixels(span, scale);
+  const box = spanBox(item, span, scale, y, height, left, right, selected);
+  if (!box) return null;
+  box.tooltip = boundsTooltip(item, note, calendar);
+  return { ...box, ...feathers };
+}
+
+function placeGhost(
+  entry: DatedEntry,
+  seat: GhostSeat,
+  calendar: CalendarEngine,
+  scale: Scale,
+  y: number,
+  height: number,
+  left: number,
+  right: number,
+  selected: boolean,
+  measure: (title: string) => number
+): ItemBox | null {
+  const label = seat.bar.culture?.trim() || entry.item.title;
+  const occupancy = pixelOccupancy(seat.span, label, undefined, scale, height, measure);
+  if (occupancy.to < left || occupancy.from > right) return null;
+  const box = spanBox(entry.item, seat.span, scale, y, height, left, right, selected);
+  if (!box) return null;
+  box.id = seat.bar.id;
+  box.title = label;
+  box.tooltip =
+    seat.bar.accountIndex !== undefined
+      ? barDateTooltip(entry.item, calendar, seat.span, {
+          ...(seat.bar.culture ? { by: seat.bar.culture } : {}),
+          ...(seat.bar.claim ? { claim: seat.bar.claim } : {}),
+        })
+      : boundsTooltip(entry.item, entry.note, calendar, {
+          ...(seat.bar.culture ? { by: seat.bar.culture } : {}),
+          ...(seat.bar.claim ? { claim: seat.bar.claim } : {}),
+        });
+  box.ghost = true;
+  if (seat.bar.accountIndex !== undefined) box.accountIndex = seat.bar.accountIndex;
+  if (seat.bar.culture) box.by = seat.bar.culture;
+  if (seat.bar.claim) box.claim = seat.bar.claim;
+  if (seat.bar.certainty) box.certainty = seat.bar.certainty;
+  const feathers = featherPixels(seat.span, scale);
+  return { ...box, ...feathers };
+}
+
+function spanBox(
+  item: TimelineItem,
+  span: DrawSpan,
+  scale: Scale,
+  y: number,
+  height: number,
+  left: number,
+  right: number,
+  selected: boolean
+): ItemBox | null {
+  const tags = item.tags.join(" ");
+  const base = {
+    id: item.id,
+    kind: item.kind,
+    title: item.title,
+    label: "",
+    labelX: 0,
+    labelOutside: false,
+    tooltip: item.title,
+    hint: item.displayHint ?? "",
+    ...(item.certainty ? { certainty: item.certainty } : {}),
+    ordered: false,
+    pinned: false,
+    y,
+    height,
+    laneId: item.laneId ?? "",
+    tags,
+    ...(item.color ? { color: item.color } : {}),
+    ...(item.parseError ? { parseError: item.parseError } : {}),
+    selected,
+  };
+  if (span.point) {
+    const x = scale.toPx(span.coreFrom);
+    return { ...base, x, width: height, shape: "point", bracket: null };
+  }
+  const clipped = clipSpan(scale.toPx(span.coreFrom), scale.toPx(span.coreTo), left, right);
+  if (!clipped) {
+    const x = scale.toPx(span.coreFrom);
+    if (x < left || x > right) return null;
+    return { ...base, x, width: height, shape: "point", bracket: null };
+  }
+  return { ...base, x: clipped.x, width: Math.max(clipped.width, MIN_BAR_PX), shape: "bar", bracket: null };
+}
+
+function featherPixels(span: DrawSpan, scale: Scale): Pick<ItemBox, "featherLead" | "featherTrail"> {
+  const solidTo = span.point ? span.coreFrom : span.coreTo;
+  const lead =
+    span.leadFrom !== null && span.leadFrom < span.coreFrom
+      ? { x: scale.toPx(span.leadFrom), width: scale.toPx(span.coreFrom) - scale.toPx(span.leadFrom) }
+      : undefined;
+  const trail =
+    span.trailTo !== null && span.trailTo > solidTo
+      ? { x: scale.toPx(solidTo), width: scale.toPx(span.trailTo) - scale.toPx(solidTo) }
+      : undefined;
+  return {
+    ...(lead && lead.width > 0.5 ? { featherLead: lead } : {}),
+    ...(trail && trail.width > 0.5 ? { featherTrail: trail } : {}),
+  };
+}
+
+function placeEra(
+  item: TimelineItem,
+  scale: Scale,
+  left: number,
+  right: number,
+  inset: number,
+  note: DatedEntry["note"]
+): EraBox | null {
+  const resolved = !writtenStart(item) ? boundsSpan(note) : null;
+  const extent = resolved ? { from: resolved.min, to: resolved.max > resolved.min ? resolved.max : resolved.min + 1 } : extentOf(item);
   const span = clipSpan(scale.toPx(extent.from), scale.toPx(extent.to), left, right);
   if (!span) return null;
   return {
