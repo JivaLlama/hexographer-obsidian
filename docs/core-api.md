@@ -197,8 +197,8 @@ filters:
 
 These names are proposals. Do not import them.
 
-- Relative dates: [design-relative-dates.md](design-relative-dates.md). `RelativeClause`, `TimeUnitDef`, `ResolvedBounds`, `ResolveInput`, `resolveDates`, `planRelativeMove`. `after` / `before` / `overlaps` / `gap`, plus `~4115` sharing the same min/max bounds. Not in NOTE-FORMAT-SPEC v0.1.
-- Accounts: [design-accounts.md](design-accounts.md). `Account`, `parseAccounts`, `FilterState.accounts` (a boolean toggle, not a list). Not implemented.
+- Relative dates: [design-relative-dates.md](design-relative-dates.md). `Interval` (`{ likely, min, max }`), `ResolvedBounds` (`{ start: Interval, end: Interval | null }`), `Relation`, `TimeUnitDef`, `ResolveInput`, `resolveDates`, `planRelativeMove`. `relations` is the list; `after` / `before` / `overlaps` are sugar. Anchor uncertainty compounds. A gap is a sum such as `2 gen + 10y`. Not in NOTE-FORMAT-SPEC v0.1. Not exported.
+- Accounts: [design-accounts.md](design-accounts.md). `Account`, `parseAccounts`, `FilterState.accounts?: boolean | string[]`. Ghosts are dashed outlines on the primary's row; a ghost row is only for a collision, and that pass is the view's. The culture-timeline swap stands. Not implemented.
 
 ## Checks
 

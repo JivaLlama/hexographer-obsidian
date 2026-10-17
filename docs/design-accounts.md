@@ -82,15 +82,22 @@ A drag still changes one place.
 
 ## Filter
 
-`FilterState.accounts?: boolean`. Omitted or `false` means the view draws primaries only. `true` means draw account ghosts as well. It is a toggle, not a list of cultures. Culture and calendar filters are unchanged and still apply to the primary.
+```ts
+interface FilterState {
+  /** true: every ghost. false or omitted: none. A list: ghosts whose `by` matches, trimmed and case-insensitive, same as `cultures`. */
+  accounts?: boolean | string[];
+}
+```
 
-Ghosts do not affect `packLanes` of the primaries. The view paints them on the primary's row, or one ghost row above it, and does not feed them to `packLanes` unless the user turns the toggle on. When the toggle is on, pack each ghost with `labelExtent` so its claim does not cover the next primary. That callback already exists.
+Omitted or `false` draws primaries only. `true` draws every account ghost. A list draws a ghost only when its `by` matches one entry. `["[[tideborn]]"]` matches `by: "[[Tideborn]]"`. Culture and calendar filters are unchanged and still apply to the primary; they do not replace this list.
+
+Ghosts are drawn on the primary's row: a dashed outline, with `claim` in the tooltip, using the existing `wt-ghost` class. They stay on that row. The view moves a ghost onto its own row only when the outline would collide with the primary or with another ghost. That collision pass is the view's job. Core packing does not change, and ghosts are not passed to `packLanes`.
 
 ## Culture timelines
 
 Recommendation: on a culture timeline for X, an account `by` X is the bar that timeline treats as primary, and the note's own start is the ghost. The master timeline does the opposite: the note's start is primary, and every account is a ghost. Storage does not change in either view. The culture filter still decides which notes appear: a note appears on X's timeline when `item.culture` is X **or** some account `by` is X. A note with neither does not appear.
 
-That matches "whose history this is". X's timeline answers what X says happened. The master answers the vault's chosen primary, with other claims beside it when `filters.accounts` is true.
+That matches "whose history this is". X's timeline answers what X says happened. The master answers the vault's chosen primary, with other claims beside it when `filters.accounts` is `true` or a list that includes them. A list still uses the culture swap: on X's timeline the swapped bar is the one X wrote, and the list only chooses which other ghosts are drawn.
 
 Alternatives, if that swap is too surprising:
 
