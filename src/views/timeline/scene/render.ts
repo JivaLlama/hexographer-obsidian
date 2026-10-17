@@ -1,4 +1,4 @@
-import { estimateLabelPx, pointRadius, type SceneModel } from "./layout";
+import { estimateLabelPx, HINT_DROP, pointRadius, type SceneModel } from "./layout";
 import { WT_CLASS, WT_DATA, WT_VAR, classes } from "../theme/classes";
 import { createChrome } from "../overlay/chrome";
 
@@ -62,6 +62,15 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
   const scene = svgEl("svg");
   scene.classList.add("wt-scene");
   scene.setAttribute("aria-hidden", "true");
+  const dated = svgEl("g");
+  dated.classList.add("wt-dated");
+  const clipId = `wt-dated-${Math.random().toString(36).slice(2, 8)}`;
+  const clip = svgEl("clipPath");
+  clip.id = clipId;
+  const clipRect = svgEl("rect");
+  clip.append(clipRect);
+  const defs = svgEl("defs");
+  defs.append(clip);
   const pan = svgEl("g");
   pan.classList.add("wt-pan");
   const hitLayer = svgEl("g");
@@ -74,6 +83,7 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
   const ghost = svgEl("g");
   ghost.classList.add(WT_CLASS.ghost);
   pan.append(hitLayer, eras, lanes, items, ghost);
+  dated.append(pan);
   const labelProbe = svgEl("text");
   labelProbe.setAttribute("opacity", "0");
   labelProbe.setAttribute("pointer-events", "none");
@@ -82,7 +92,7 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
   labelProbe.textContent = "Mg";
   const beforeLayer = svgEl("g");
   beforeLayer.classList.add("wt-before");
-  scene.append(pan, beforeLayer, labelProbe);
+  scene.append(defs, dated, beforeLayer, labelProbe);
 
   const axisBefore = document.createElement("div");
   axisBefore.className = "wt-axis-before";
@@ -214,6 +224,11 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
         axisBefore.hidden = false;
         axisBefore.style.width = `${model.before.width}px`;
         axisBefore.textContent = model.before.label;
+        dated.setAttribute("clip-path", `url(#${clipId})`);
+        clipRect.setAttribute("x", String(model.before.width));
+        clipRect.setAttribute("y", "-8");
+        clipRect.setAttribute("width", String(Math.max(width - model.before.width + model.overscanPx, 0)));
+        clipRect.setAttribute("height", String(height + 16));
         const band = svgEl("rect");
         band.classList.add("wt-before-band");
         band.setAttribute("x", "0");
@@ -225,6 +240,7 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
         axisBefore.hidden = true;
         axisBefore.textContent = "";
         axisBefore.style.width = "";
+        dated.removeAttribute("clip-path");
       }
 
       for (const item of model.items) {
@@ -294,7 +310,7 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
           const hint = svgEl("text");
           hint.classList.add("wt-item-hint");
           hint.setAttribute("x", round(item.labelX));
-          hint.setAttribute("y", round(item.y + item.height / 2 + 9));
+          hint.setAttribute("y", round(item.y + item.height / 2 + HINT_DROP));
           hint.setAttribute("dominant-baseline", "middle");
           hint.textContent = item.hint;
           group.append(hint);

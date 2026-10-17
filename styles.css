@@ -344,6 +344,7 @@
   top: 0;
   bottom: 0;
   width: 1px;
+  overflow: visible;
   pointer-events: none;
 }
 
@@ -377,9 +378,13 @@
   position: absolute;
   left: 4px;
   top: 2px;
-  font-size: 11px;
-  line-height: 1.2;
+  font-size: 12px;
+  line-height: 14px;
+  letter-spacing: 0.08em;
+  font-kerning: none;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  overflow: visible;
   color: var(--wt-tick-major);
 }
 

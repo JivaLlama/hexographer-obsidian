@@ -7,6 +7,7 @@ import {
   commitPan,
   createCalendar,
   createScale,
+  formatYearsAgo,
   parseTimelineNote,
   planMove,
   RECKONING,
@@ -23,8 +24,10 @@ import {
   yearsAgoDataset,
 } from "../src/views/timeline/scene/dataset";
 import {
+  beforeBandInset,
   ellipsizeToPx,
   estimateLabelPx,
+  HINT_LINE,
   laneBlockHeight,
   layoutScene,
   pointRadius,
@@ -221,13 +224,13 @@ describe("axis and virtualization", () => {
     const climate = model.lanes.find((lane) => lane.label === "Climate");
     const treaties = model.lanes.find((lane) => lane.label === "Treaties");
     const house = model.lanes.find((lane) => lane.label === "House Vey");
-    expect(climate?.height).toBe(laneBlockHeight(1, 22));
-    expect(treaties?.height).toBe(laneBlockHeight(1, 22));
+    expect(climate?.height).toBe(laneBlockHeight(2, 22, HINT_LINE));
+    expect(treaties?.height).toBe(laneBlockHeight(1, 22, HINT_LINE));
     const houseRows = new Set(model.items.filter((item) => item.laneId === house?.id).map((item) => item.y));
     expect(houseRows.size).toBeGreaterThan(1);
     expect(house?.height).toBe(laneBlockHeight(houseRows.size, 22));
     expect(model.contentHeight).toBe(model.lanes.reduce((sum, lane) => sum + lane.height, 0));
-    expect(model.contentHeight).toBeLessThan(280);
+    expect(model.contentHeight).toBeLessThan(360);
 
     const siege = model.items.find((item) => item.title === "Siege of Port Haven");
     expect(siege?.color).toBe("#c0392b");
@@ -238,7 +241,7 @@ describe("axis and virtualization", () => {
     expect(siege?.label).toBe("Siege of Port Haven");
   });
 
-  it("truncates a label that still collides and keeps the full title on the tooltip", () => {
+  it("keeps a full title when the label reserves its own row, and a parse error stays on the tooltip", () => {
     expect(ellipsizeToPx("Coronation of Aldric", 1000, estimateLabelPx)).toBe("Coronation of Aldric");
     const truncated = ellipsizeToPx("Coronation of Aldric", estimateLabelPx("Coronat…"), estimateLabelPx);
     expect(truncated.endsWith("…")).toBe(true);
@@ -283,9 +286,10 @@ describe("axis and virtualization", () => {
       selection: [],
     });
     const bar = model.items.find((item) => item.id === barItem.id);
+    const beside = model.items.find((item) => item.id === neighbor.id);
     expect(bar?.tooltip).toBe("Siege of Port Haven");
-    expect(bar?.label.endsWith("…") || bar?.label === "").toBe(true);
-    expect(bar?.label).not.toBe(siege.title);
+    expect(bar?.label).toBe(siege.title);
+    expect(beside?.y).not.toBe(bar?.y);
     const error = model.items.find((item) => item.id === broken.id);
     expect(error?.tooltip).toBe("Treaty of Amber\nUnknown month");
     expect(error?.parseError).toBe("Unknown month");
@@ -336,7 +340,12 @@ displayHint: "dates are approximate"
     expect(again?.source.startRaw).not.toBe(item.source.startRaw);
 
     const sample = stubDataset();
-    const camera = cameraForDataset(sample, 900);
+    const reserve = beforeBandInset(
+      sample.ordered,
+      sample.items.filter((item) => item.kind === "era"),
+      sample.calendars
+    );
+    const camera = cameraForDataset(sample, 900 - reserve);
     const scale = createScale({
       originDays: camera.originDays,
       pxPerDay: camera.pxPerDay,
@@ -361,6 +370,21 @@ displayHint: "dates are approximate"
     expect(dry?.hint).toBe("dates are approximate");
     expect(dry?.tooltip).toContain("uncertain");
     expect(dry?.tooltip).toContain("dates are approximate");
+    const winter = model.items.find((entry) => entry.title === "The Long Winter");
+    expect(winter?.label).toBe("The Long Winter");
+    if (dry && winter) expect(dry.y).not.toBe(winter.y);
+    const inset = model.before?.width ?? 0;
+    expect(inset).toBeGreaterThan(0);
+    const thirdAge = model.eras.find((era) => era.title === "Third Age");
+    const house = model.items.find((entry) => entry.title === "House Vey");
+    expect(thirdAge?.labelX).toBeGreaterThanOrEqual(inset);
+    expect(house?.x).toBeGreaterThanOrEqual(inset);
+    for (const entry of model.items) {
+      if (entry.pinned || !entry.hint) continue;
+      const lane = model.lanes.find((item) => item.id === entry.laneId);
+      expect(lane?.height).toBeGreaterThan(laneBlockHeight(1, 22));
+    }
+    expect(HINT_LINE).toBeGreaterThan(0);
     const open = model.items.find((entry) => entry.title === "Open Marker");
     expect(open?.certainty).toBe("open");
     const earlier = model.items.find((entry) => entry.title === "Earlier Note");
@@ -384,15 +408,28 @@ displayHint: "dates are approximate"
   it("labels a before-present axis in years ago", () => {
     const datasetAgo = yearsAgoDataset();
     expect(datasetAgo.calendar.def.display?.mode).toBe("before-present");
-    const camera = cameraForDataset(datasetAgo, 800);
+    const camera = cameraForDataset(datasetAgo, 1052);
     const scale = createScale({
       originDays: camera.originDays,
       pxPerDay: camera.pxPerDay,
       minPxPerDay: 1e-9,
       maxPxPerDay: 100_000,
     });
-    const ticks = layoutTicks(datasetAgo.calendar, scale, 800, 20, 48);
-    expect(ticks.some((tick) => tick.major && tick.label.endsWith(" ya"))).toBe(true);
+    const ticks = layoutTicks(datasetAgo.calendar, scale, 1052, 48, 72);
+    const majors = ticks.filter((tick) => tick.major).sort((a, b) => a.x - b.x);
+    const labels = majors.map((tick) => tick.label);
+    const seven = labels.indexOf("700 ya");
+    expect(seven).toBeGreaterThanOrEqual(0);
+    expect(labels[seven + 1]).toBe("600 ya");
+    expect(labels[seven + 2]).toBe("500 ya");
+    expect(labels).not.toContain("000 ya");
+    const absolute = datasetAgo.calendar.toAbsoluteYear(
+      datasetAgo.calendar.fromDays(datasetAgo.calendar.toDays({ year: 1400, precision: "year" }), "year")
+    );
+    expect(formatYearsAgo(datasetAgo.calendar.def, absolute)).toBe("600 ya");
+    expect(majors.find((tick) => tick.label === "600 ya")?.label).toBe(
+      formatYearsAgo(datasetAgo.calendar.def, absolute)
+    );
     const model = layoutScene({
       items: datasetAgo.items,
       ordered: datasetAgo.ordered,
@@ -400,10 +437,10 @@ displayHint: "dates are approximate"
       lanes: buildLanes(datasetAgo.items, datasetAgo.config.lanes?.order),
       calendar: datasetAgo.calendar,
       scale,
-      viewportWidth: 800,
+      viewportWidth: 1052,
       itemHeight: 22,
-      overscanPx: 20,
-      minLabelPx: 48,
+      overscanPx: 48,
+      minLabelPx: 72,
       selection: [],
     });
     const middle = model.items.find((item) => item.title === "Middle Marker");

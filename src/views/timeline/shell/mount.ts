@@ -2,7 +2,7 @@ import { commitPan, createScale, filterItems, scaleLimitsForCalendar, type Scale
 import { bindInteraction } from "../interaction/controller";
 import type { WheelAction } from "../interaction/wheel";
 import { buildLanes, cameraForDataset, filterOrdered, stubDataset, type TimelineDataset } from "../scene/dataset";
-import { layoutScene } from "../scene/layout";
+import { beforeBandInset, layoutScene } from "../scene/layout";
 import { createTimelineView, type TimelineView } from "../scene/render";
 import { createViewStore, type ViewStore } from "../store";
 
@@ -42,6 +42,7 @@ export function mountTimeline(options: MountOptions): TimelineMount {
   let dataset: TimelineDataset | null = null;
   let limits: ScaleLimits = { minPxPerDay: 1e-6, maxPxPerDay: 200 };
   let translateX = 0;
+  let datedInset = 0;
   let hasFit = false;
   let generation = 0;
   let focused = false;
@@ -79,7 +80,20 @@ export function mountTimeline(options: MountOptions): TimelineMount {
       selection: snapshot.selection,
     });
     view.render(model);
+    datedInset = model.before?.width ?? 0;
     view.setTranslate(translateX);
+  };
+
+  const datedWidth = (width: number): number => {
+    if (!dataset) return width;
+    const snapshot = store.get();
+    const items = filterItems(dataset.items, snapshot.filters);
+    const inset = beforeBandInset(
+      filterOrdered(dataset.ordered, snapshot.filters),
+      items.filter((item) => item.kind === "era"),
+      dataset.calendars
+    );
+    return Math.max(width - inset, 1);
   };
 
   const publishStatus = (): void => {
@@ -111,7 +125,7 @@ export function mountTimeline(options: MountOptions): TimelineMount {
   };
 
   const zoomAt = (focusX: number, factor: number): void => {
-    const next = commitPan(currentScale(), translateX).zoomAt(focusX, factor);
+    const next = commitPan(currentScale(), translateX).zoomAt(focusX - datedInset, factor);
     translateX = 0;
     rememberCamera(next.originDays, next.pxPerDay);
     view.setTranslate(0);
@@ -123,7 +137,7 @@ export function mountTimeline(options: MountOptions): TimelineMount {
     const width = view.sceneWidth();
     if (width < 2) return;
     limits = scaleLimitsForCalendar(dataset.calendar, { viewportPx: width });
-    const camera = cameraForDataset(dataset, width);
+    const camera = cameraForDataset(dataset, datedWidth(width));
     translateX = 0;
     store.setViewState({ ...camera, laneScroll: view.laneScroll() });
     view.setTranslate(0);
@@ -226,11 +240,11 @@ export function mountTimeline(options: MountOptions): TimelineMount {
     store.setFilters(dataset.config.filters ?? {});
     const shouldFit = becameReal || (reloadOptions?.fit !== false && (reloadOptions?.fit === true || !hasFit));
     if (shouldFit && width >= 2) {
-      const camera = cameraForDataset(dataset, width);
+      const camera = cameraForDataset(dataset, datedWidth(width));
       store.setViewState(camera);
       hasFit = true;
     } else if (shouldFit) {
-      store.setViewState(cameraForDataset(dataset, limitWidth));
+      store.setViewState(cameraForDataset(dataset, datedWidth(limitWidth)));
       hasFit = false;
     } else {
       const camera = store.get().viewState;
