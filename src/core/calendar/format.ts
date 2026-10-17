@@ -1,8 +1,9 @@
+import { absoluteYearOf, labelYearToAbsolute } from "./eras";
 import { precisionOfPattern } from "./validate";
 import type { CalendarDate, CalendarDef, EraDef, Precision } from "./types";
 
 function tokenRegex(): RegExp {
-  return /\{(EEEE|yyyy|MMMM|MMM|HH|MM|dd|mm|E|y|M|d|H|m)\}/g;
+  return /\{(EEEE|yyyy|MMMM|MMM|HH|MM|dd|mm|ya|E|y|M|d|H|m)\}/g;
 }
 
 interface CompiledFormat {
@@ -64,6 +65,10 @@ export function compileFormats(def: CalendarDef): CompiledFormat[] {
 function compileOne(def: CalendarDef, name: string, pattern: string, named: boolean): CompiledFormat {
   const precision = precisionOfPattern(pattern);
   if (!precision) throw new Error(`format ${name} has no date tokens`);
+  // `{ya}` is a display label. It must not become a parse pattern.
+  if (pattern.includes("{ya}")) {
+    return { name, pattern, precision, regex: /(?!)/, named };
+  }
   let source = "";
   let last = 0;
   const seen = new Set<string>();
@@ -172,11 +177,33 @@ export function formatDate(def: CalendarDef, date: CalendarDate, pattern: string
         return String(date.minute ?? 0);
       case "mm":
         return padNumber(date.minute ?? 0, 2);
+      case "ya":
+        return formatYearsAgo(def, absoluteYearOfDate(def, date));
       default:
         return "";
     }
   });
   return rendered.replace(/[ \t]{2,}/g, " ").trim();
+}
+
+/** `1500 ya` for an absolute year. Storage strings never use this. */
+export function formatYearsAgo(def: CalendarDef, absoluteYear: number): string {
+  const display = def.display;
+  if (!display || display.mode !== "before-present") {
+    throw new Error("calendar has no before-present display");
+  }
+  const years = display.presentYear - absoluteYear;
+  const suffix = display.suffix.trim();
+  return suffix ? `${years} ${suffix}` : String(years);
+}
+
+function absoluteYearOfDate(def: CalendarDef, date: CalendarDate): number {
+  if (date.era) {
+    const era = def.eras.find((item) => item.id === date.era);
+    if (!era) throw new Error(`unknown era ${date.era}`);
+    return absoluteYearOf(era, date.year);
+  }
+  return labelYearToAbsolute(date.year, def.hasYearZero);
 }
 
 function padNumber(value: number, width: number): string {

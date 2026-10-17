@@ -1,9 +1,11 @@
 export { calendarFromUnknown, parseCalendarDocument, serializeCalendarDocument } from "./document";
+export { formatYearsAgo } from "./format";
 export { convert, createCalendar, fromLocalDays, toLocalDays } from "./engine";
 export { GREGORIAN } from "./gregorian";
 export { HARBOR, HARBOR_EPOCH_OFFSET } from "./harbor";
 export { RECKONING } from "./reckoning";
 export type {
+  BeforePresentDisplay,
   CalendarDate,
   CalendarDef,
   CalendarEngine,

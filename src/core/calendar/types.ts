@@ -100,6 +100,18 @@ export interface CalendarDef {
   formats: Record<string, string>;
   /** A key in `formats`. */
   defaultFormat: string;
+  /**
+   * Display-only labeling. Storage and note strings stay absolute years.
+   * `presentYear` is an absolute year. A year Y is shown as `(presentYear - Y) suffix`.
+   */
+  display?: BeforePresentDisplay;
+}
+
+/** Axis and tooltip labels such as `1500 ya`. Not a parse format. */
+export interface BeforePresentDisplay {
+  mode: "before-present";
+  presentYear: number;
+  suffix: string;
 }
 
 export interface CalendarDate {

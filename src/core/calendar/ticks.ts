@@ -1,4 +1,5 @@
 import { chronologicalEras } from "./eras";
+import { formatYearsAgo } from "./format";
 import { mod } from "../num";
 import type { CalendarEngine, DayCount, Tick, TickUnit } from "./types";
 
@@ -180,5 +181,9 @@ function tickLabel(engine: CalendarEngine, days: DayCount, unit: TickUnit): stri
   if (unit === "hour") return engine.format(days, undefined, "hour");
   if (unit === "day" || unit === "week") return engine.format(days, undefined, "day");
   if (unit === "month") return engine.format(days, undefined, "month");
+  if (engine.def.display?.mode === "before-present") {
+    const date = engine.fromDays(days, "year");
+    return formatYearsAgo(engine.def, engine.toAbsoluteYear(date));
+  }
   return engine.format(days, undefined, "year");
 }

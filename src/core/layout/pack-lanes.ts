@@ -1,5 +1,21 @@
 import type { Lane, TimelineItem } from "../types";
 import { extentOf } from "../items/extent";
+import type { DayCount } from "../calendar/types";
+
+/** Extra world-day interval a label occupies. The view converts pixels to days. */
+export interface LabelExtent {
+  from: DayCount;
+  to: DayCount;
+}
+
+export interface PackOptions {
+  /**
+   * Horizontal space reserved for a label, in world days.
+   * Return null to pack that item from `extentOf` alone.
+   * Omit the option and every item packs exactly as before.
+   */
+  labelExtent?: (item: TimelineItem) => LabelExtent | null | undefined;
+}
 
 /** Lane id used for items with `laneId === null`. */
 export const DEFAULT_LANE_ID = "";
@@ -17,7 +33,11 @@ export interface PackResult {
  * re-sort by start before every pack will reshuffle rows when items cross.
  * Overlap is half-open `[from, to)`.
  */
-export function packLanes(items: readonly TimelineItem[], lanes: readonly Lane[]): PackResult {
+export function packLanes(
+  items: readonly TimelineItem[],
+  lanes: readonly Lane[],
+  options?: PackOptions
+): PackResult {
   const rows = new Map<string, number>();
   const laneHeights = new Map<string, number>();
   for (const lane of lanes) laneHeights.set(lane.id, 1);
@@ -34,7 +54,7 @@ export function packLanes(items: readonly TimelineItem[], lanes: readonly Lane[]
   for (const [laneId, list] of grouped) {
     const rowEnds: number[] = [];
     for (const item of list) {
-      const extent = extentOf(item);
+      const extent = occupiedExtent(item, options);
       if (!Number.isFinite(extent.from) || !Number.isFinite(extent.to)) continue;
       let placed = -1;
       for (let row = 0; row < rowEnds.length; row++) {
@@ -54,4 +74,14 @@ export function packLanes(items: readonly TimelineItem[], lanes: readonly Lane[]
   }
 
   return { rows, laneHeights };
+}
+
+function occupiedExtent(item: TimelineItem, options: PackOptions | undefined): { from: number; to: number } {
+  const extent = extentOf(item);
+  const label = options?.labelExtent?.(item);
+  if (!label || !Number.isFinite(label.from) || !Number.isFinite(label.to) || !(label.to > label.from)) {
+    return extent;
+  }
+  if (!Number.isFinite(extent.from) || !Number.isFinite(extent.to)) return extent;
+  return { from: Math.min(extent.from, label.from), to: Math.max(extent.to, label.to) };
 }
