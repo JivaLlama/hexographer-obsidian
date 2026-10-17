@@ -21,10 +21,12 @@ export function itemMatches(item: TimelineItem, filter: FilterState | undefined)
     if (!ids.has(normalizeName(item.calendarId))) return false;
   }
   if (filter.cultures && filter.cultures.length > 0) {
-    if (!item.culture || !filter.cultures.some((culture) => normalizeName(culture) === normalizeName(item.culture ?? ""))) {
-      return false;
-    }
+    const wanted = filter.cultures.map(normalizeName);
+    const own = item.culture ? normalizeName(item.culture) : "";
+    const accountHit = item.accounts?.some((account) => wanted.includes(normalizeName(account.by))) ?? false;
+    if (!wanted.includes(own) && !accountHit) return false;
   }
+  // `filters.accounts` chooses ghosts inside a note. It does not drop the note.
   if (filter.text) {
     const needle = filter.text.toLowerCase();
     const haystack = `${item.title} ${item.tags.join(" ")} ${item.laneId ?? ""} ${item.culture ?? ""} ${item.calendarId}`.toLowerCase();

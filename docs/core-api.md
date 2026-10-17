@@ -16,14 +16,19 @@ The plugin entry does not import the core yet. The hex painter is unchanged.
 - `culture` is an optional frontmatter string (`culture: "[[Tideborn]]"`). It is independent of `calendarId`: two cultures may share a calendar. Omit the key and the field is absent.
 - `certainty` is optional: `"locked" | "working" | "uncertain" | "open"` (`CERTAINTIES`). The frontmatter value is trimmed and compared case-insensitively. An unknown value leaves `certainty` unset and pushes a string onto `warnings`. It does not set `parseError`.
 - `displayHint` is an optional string passed through on read. A drag writeback (`planMove` / `applyPlanToNote` / `serializeTimelineNote`) never writes it. Other frontmatter keys are copied through, so the hint survives a move.
+- `startApproximate` / `endApproximate` are set when that edge's raw string has a leading `~`. `source.startRaw` keeps the tilde. `planMove` writes it back on that edge.
+- `relations` is the parsed `relations` list, with a sugar `after` / `before` / `overlaps` entry appended after the list. See [Relative dates](#relative-dates).
+- `accounts` is other cultures' versions of this note. A primary drag does not rewrite them. See [Accounts](#accounts).
 - `warnings` lists non-fatal notes. `parseError` is still the fatal date failure.
 - `parseError` is set when a date fails, or when `calendar` names an engine that was not loaded. The item is still returned.
 - `links.other` is always `[]` in this phase. `places` and `people` come from frontmatter. Body wikilinks are not scanned.
 - `source.startRaw` / `source.endRaw` are the original strings.
 
-`FilterState.range` is half-open `[from, to)` on world days. `itemMatches` / `filterItems` implement it. An era ignores a lane filter and still has to pass the other filters.
+`FilterState.range` is half-open `[from, to)` on world days. `itemMatches` / `filterItems` implement it. An era ignores a lane filter and still has to pass the other filters. A note with relations and no written `start` has `item.start === 0`. That `0` is not a world day. A range filter still uses `extentOf`, so apply it to `resolveDates` bounds when the note has no written start.
 
-`FilterState.calendars` matches `item.calendarId`. `FilterState.cultures` matches `item.culture`. Both comparisons trim and ignore case. An item with no culture fails a non-empty culture list. Eras are included in both. A culture timeline sets both. A master timeline leaves them empty and shows every item. Text search also looks at the culture and the calendar id.
+`FilterState.calendars` matches `item.calendarId`. `FilterState.cultures` matches `item.culture` or any `accounts[].by`. Both comparisons trim and ignore case, and they do not strip `[[ ]]`. An item with no culture and no matching account fails a non-empty culture list. Eras are included in both. A culture timeline sets both. A master timeline leaves them empty and shows every item. Text search also looks at the culture and the calendar id.
+
+`FilterState.accounts` does not remove items. `true`, `false`, or a list only affects `barsForItem`. Omitted and `false` draw no ghosts.
 
 `EditCommand` is `{ label, patches: [{ path, fields: [{ key, before, after }] }] }`. One drag is one command.
 
@@ -49,7 +54,7 @@ BEFORE_RECKONING === "before reckoning"
 
 `groupOrderedItems` keeps the anchor order. Missing or unknown eras share one leading group whose `eraKey`, `label`, and `unresolved` flag are `BEFORE_RECKONING`. Inside a group, items sort by `order`, then title, then id. A full tie keeps input order.
 
-A number `order` together with a `start` stays a dated event. `order` is ignored for placement. A non-numeric `order` and no `start` stays a dated note with `parseError` "missing start" and a warning.
+A number `order` together with a `start` stays a dated event. `order` is ignored for placement. A number `order` together with relations and no `start` also stays dated: the relations place it, and `parseTimelineNote` returns the item. A non-numeric `order` and no `start` and no relations stays a dated note with `parseError` "missing start" and a warning.
 
 ## Scale
 
@@ -59,7 +64,7 @@ A number `order` together with a `start` stays a dated event. `order` is ignored
 
 ## Vault scan
 
-The shell still does file I/O. It passes `{ path, content }[]` and a `VaultSettings` (`{ defaultCalendarId? }`).
+The shell still does file I/O. It passes `{ path, content }[]` and a `VaultSettings` (`{ defaultCalendarId?, units? }`). `units` is `{ gen: "40-60y" }` or a `TimeUnitDef[]`.
 
 ```ts
 resolveDefaultCalendar(settings, calendarIds) → { calendarId, warning? }
@@ -90,7 +95,51 @@ Pass `calendarForItem(item, calendars)` as `calendar`. That is the note's calend
 - A zero-length snap that lands on the original instant returns the original raw string, so the note does not churn.
 - `command.patches` is empty when nothing changed. Do not push that.
 
-`serializeTimelineNote(markdown, { start, end })` patches frontmatter and copies the body through unchanged. `end: null` deletes the key. `applyPlanToNote(markdown, plan)` writes `startRaw` and, when present, `endRaw`.
+`serializeTimelineNote(markdown, { start, end })` patches frontmatter and copies the body through unchanged. `end: null` deletes the key. `applyPlanToNote(markdown, plan)` writes `startRaw` and, when present, `endRaw`. `applyCommandToNote(markdown, command)` writes `start`, `end`, `gap`, `relations`, and `accounts` from an `EditCommand`. A primary drag's command has no `accounts` field, so the list is copied through.
+
+## Relative dates
+
+```ts
+resolveDates(items, settings, calendars) → ResolvedNote[]
+planRelativeMove(item, deltaDays, { calendar, units, relationIndex?, anchorDays }) → { gap, relations, command }
+parseGap(text) → GapTerm[] | { error }
+formatGap(terms) → string
+normalizeUnits(settings.units) → TimeUnitDef[]
+```
+
+`ResolvedNote` is `{ id, bounds?, error?, warnings? }`. `bounds` is `{ start: Interval, end: Interval | null }` and `Interval` is `{ likely, min, max }` in world days. An exact date is zero-width at the written instant. `~4115` spans that year: `min` is the start, `max` is the last minute of it, `likely` is the midpoint.
+
+Sugar `after` / `before` / `overlaps` plus optional `gap` becomes one `Relation`, appended after a `relations` list when both are present. `edge: end` constrains the end. Gap grammar is a sum: `2 gen + 10y`, and `2 gen - 10y` is a negative year term. `y`, `mo`, and `d` are built in. Vault units are year ranges. An unknown unit sets `error` (`unknown unit "age"`) and leaves `bounds` unset.
+
+Anchor uncertainty compounds. `after` adds the gap to the anchor's end (a point uses its start). `before` mirrors that from the anchor's start. `overlaps` is the anchor's occupied interval, expanded by `gapMax` on both sides. Each hop adds the anchor's width to the gap's width. A 3-deep `1 gen` chain (40–60y) has widths 0, 20, 40, and 60 years.
+
+Several relations on one edge are intersected. `likely` stays when it still lies in the overlap, so an exact date inside a wide relation does not jump to the middle. An empty overlap warns `relation does not meet the written date` and still resolves: the written date when there is one, otherwise the first relation.
+
+A cycle sets `error` to `cycle: [[A]] → [[B]] → [[A]]` and leaves `bounds` unset. `unresolved anchor [[X]]` is a warning, including when the target is on a cycle or itself unresolved. Those notes have no bounds.
+
+An exact end with a written absolute or `~` start keeps the finalized start's width: `D` is the written end minus that start's nominal instant, and the end interval is the start interval shifted by `D`. An approximate end, an `edge: end` relation, or an exact end on a pure relative start (no written start) resolves on its own. The pure-relative end is the zero-width written instant. It does not shift the relation's width. A first draft sketched that shift as `[1090, 1130]` for chain note C; that case does not occur.
+
+Gap years use the **dependent** calendar's `daysInYear` at the anchor's likely world day. Do not pass `item.start` through `convert`. `10d` is already world days. `2mo` uses the dependent month length at that instant.
+
+`planRelativeMove` edits `gap`. Positive `deltaDays` moves later, the same sign as `planMove`. `before` subtracts it. The coarsest ranged term snaps at its midpoint (`gen` 40–60y counts as 50y). A leftover smaller than that midpoint stays whole years. `Math.round` breaks a half-year tie toward the later date. Sugar patches the `gap` key. A list patches `relations`. Moving an anchor with `planMove` writes only that note. Dependents keep their gap strings and move on the next `resolveDates`.
+
+`ctx.anchorDays` is the anchor's likely world day. `ctx.calendar` must be the note's calendar.
+
+## Accounts
+
+```ts
+parseAccounts(value, noteCalendarId, calendars) → { accounts, warnings }
+barsForItem(item, { culture?, accounts? }) → { id, primary, ghosts }
+planAccountMove(item, accountIndex, deltaDays, mode, { fine, calendar }) → PlanMoveResult & { accounts }
+```
+
+`Account` is one row: `by`, a date (`start` / `end`) or `order` / `eraRef`, optional `claim` and `certainty`, `calendarId`, and `sourceIndex`. A row needs `by` and either `start` or `order`. Both, neither, a bad date, or `end` without `start` drops the row and warns. An unknown certainty drops only that field. An unknown row calendar warns and falls back to the note calendar. `declaredCalendar` is set only when the author wrote `calendar`, and writeback copies that key. A bad row does not set `parseError`.
+
+`barsForItem` is the culture-timeline swap. On the master timeline the note's start is primary and accounts are ghosts. On culture X's timeline the first account `by` X is primary, and the note's own bar is a ghost tagged with `item.culture`. `accounts: true` draws every ghost. `false` or omitted draws none, so the swapped-out note stays hidden. A list matches `by` (or that culture tag) trimmed and case-insensitive, brackets included: `[[tideborn]]` matches `[[Tideborn]]` and does not match `tideborn`. Ghosts use `wt-ghost`. They are not passed to `packLanes`. A ghost row on collision is the view's job.
+
+`planAccountMove` patches the `accounts` array in one field, so undo replaces the list. `claim`, `by`, `certainty`, and `displayHint` stay as written. The row's calendar must be the one passed in.
+
+`parseTimelineConfig` reads `filters.accounts` as `true`, `false`, or a string list.
 
 ## Lanes
 
@@ -193,12 +242,9 @@ filters:
 
 `filters.calendar` and `filters.culture` are accepted as a single string and stored on `calendars` / `cultures`. `view.from` and `view.to` are strings in the display calendar.
 
-## Design only, not exported
+## Design notes
 
-These names are proposals. Do not import them.
-
-- Relative dates: [design-relative-dates.md](design-relative-dates.md). `RelativeClause`, `TimeUnitDef`, `ResolvedBounds`, `ResolveInput`, `resolveDates`, `planRelativeMove`. `after` / `before` / `overlaps` / `gap`, plus `~4115` sharing the same min/max bounds. Not in NOTE-FORMAT-SPEC v0.1.
-- Accounts: [design-accounts.md](design-accounts.md). `Account`, `parseAccounts`, `FilterState.accounts` (a boolean toggle, not a list). Not implemented.
+The arithmetic and the drag examples live in [design-relative-dates.md](design-relative-dates.md) and [design-accounts.md](design-accounts.md). The names in the sections above are exported. Two draft rules changed when they were built: an unresolved anchor is a warning, and a pure relative start plus an exact end stays a zero-width end instead of shifting the relation's width.
 
 ## Checks
 

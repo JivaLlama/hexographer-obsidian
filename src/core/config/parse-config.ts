@@ -61,6 +61,11 @@ function readFilters(raw: Record<string, unknown>): FilterState {
   if (calendars) filters.calendars = calendars;
   if (cultures) filters.cultures = cultures;
   if (typeof raw.text === "string") filters.text = raw.text;
+  if (typeof raw.accounts === "boolean") filters.accounts = raw.accounts;
+  else {
+    const accounts = stringList(raw.accounts);
+    if (accounts) filters.accounts = accounts;
+  }
   if (Array.isArray(raw.kinds)) {
     filters.kinds = raw.kinds.filter((kind): kind is ItemKind => typeof kind === "string" && KINDS.includes(kind as ItemKind));
   }
