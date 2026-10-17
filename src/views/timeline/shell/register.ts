@@ -7,7 +7,7 @@ import { createRefreshBus } from "./refresh";
 
 export function registerWorldTimeline(plugin: Plugin): void {
   const bus = createRefreshBus(plugin);
-  plugin.registerView(WORLD_TIMELINE_VIEW, (leaf) => new TimelineItemView(leaf, bus));
+  plugin.registerView(WORLD_TIMELINE_VIEW, (leaf) => new TimelineItemView(leaf, plugin, bus));
   registerTimelineBlock(plugin, bus);
 
   plugin.addCommand({

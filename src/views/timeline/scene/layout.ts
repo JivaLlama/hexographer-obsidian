@@ -1,4 +1,18 @@
-import { extentOf, packLanes, type CalendarEngine, type ItemKind, type Lane, type Scale, type TimelineItem } from "../../../core";
+import {
+  BEFORE_RECKONING,
+  eraAnchors,
+  extentOf,
+  formatYearsAgo,
+  groupOrderedItems,
+  packLanes,
+  type CalendarEngine,
+  type Certainty,
+  type ItemKind,
+  type Lane,
+  type OrderedItem,
+  type Scale,
+  type TimelineItem,
+} from "../../../core";
 import { layoutTicks, type AxisTick } from "./axis";
 
 const ROW_GAP = 4;
@@ -28,6 +42,13 @@ export interface ItemBox {
   labelOutside: boolean;
   /** Full title, plus the parse error when the note failed to parse. */
   tooltip: string;
+  /** Faint second line. Never written back. */
+  hint: string;
+  certainty?: Certainty;
+  /** Order-only note. Not draggable in time. */
+  ordered: boolean;
+  /** Viewport-pinned before-reckoning band, rather than the panning scene. */
+  pinned: boolean;
   x: number;
   y: number;
   width: number;
@@ -59,10 +80,15 @@ export interface SceneModel {
   contentHeight: number;
   viewportWidth: number;
   overscanPx: number;
+  /** Fixed band at the left edge when ordered items have no dated era. */
+  before: { width: number; label: string } | null;
 }
 
 export interface SceneLayoutInput {
   items: readonly TimelineItem[];
+  ordered?: readonly OrderedItem[];
+  /** Calendars used to match an ordered note's era reference. */
+  calendars?: readonly CalendarEngine[];
   lanes: readonly Lane[];
   calendar: CalendarEngine;
   scale: Scale;
@@ -134,15 +160,40 @@ export function layoutScene(input: SceneLayoutInput): SceneModel {
   const right = width + overscan;
   const itemHeight = Math.max(input.itemHeight, 1);
   const measure = input.labelWidth ?? estimateLabelPx;
-  // packLanes reads extentTo and nothing else about the label. Copies of point
-  // items carry a view-side extent that includes the measured label. Drawn
-  // marks still use the original item.
-  const packed = packLanes(withLabelExtents(input.items, input.scale, itemHeight, measure), input.lanes);
+  // labelExtent is a world-day interval. packLanes unions it with extentOf,
+  // so a point label keeps the next item off its row. Drawn marks stay on the real extent.
+  const packed = packLanes(input.items, input.lanes, {
+    labelExtent(item) {
+      if (!isPoint(item) || !(input.scale.pxPerDay > 0)) return null;
+      const reachDays = (pointMarkPad(itemHeight) + measure(item.title) + LABEL_GAP) / input.scale.pxPerDay;
+      if (!(reachDays > 0)) return null;
+      return { from: item.start, to: item.start + reachDays };
+    },
+  });
+
+  const datedRows = new Map<string, number>();
+  for (const item of input.items) {
+    if (item.kind === "era") continue;
+    const laneId = item.laneId ?? "";
+    const row = (packed.rows.get(item.id) ?? 0) + 1;
+    datedRows.set(laneId, Math.max(datedRows.get(laneId) ?? 0, row));
+  }
+
+  const ordered = layoutOrdered({
+    ordered: input.ordered ?? [],
+    eras: input.items.filter((item) => item.kind === "era"),
+    calendars: input.calendars ?? [input.calendar],
+    scale: input.scale,
+    left: -overscan,
+    right: width + overscan,
+    itemHeight,
+    measure,
+  });
 
   const lanes: LaneBox[] = [];
   let y = 0;
   for (const [index, lane] of input.lanes.entries()) {
-    const rows = packed.laneHeights.get(lane.id) ?? 1;
+    const rows = Math.max((datedRows.get(lane.id) ?? 0) + (ordered.extraRows.get(lane.id) ?? 0), 1);
     const height = laneBlockHeight(rows, itemHeight);
     lanes.push({
       id: lane.id,
@@ -171,10 +222,29 @@ export function layoutScene(input: SceneLayoutInput): SceneModel {
     if (!lane) continue;
     const row = packed.rows.get(item.id) ?? 0;
     const itemY = lane.y + LANE_PAD + row * (itemHeight + ROW_GAP);
-    const placed = placeItem(item, input.scale, itemY, itemHeight, left, right, selected.has(item.id), measure);
+    const placed = placeItem(
+      item,
+      input.calendar,
+      input.scale,
+      itemY,
+      itemHeight,
+      left,
+      right,
+      selected.has(item.id),
+      measure
+    );
     if (placed) items.push(placed);
   }
   assignLabels(items, measure);
+
+  for (const placed of ordered.marks) {
+    const laneId = placed.item.laneId ?? "";
+    const lane = laneY.get(laneId);
+    if (!lane) continue;
+    const dated = datedRows.get(laneId) ?? 0;
+    const itemY = lane.y + LANE_PAD + (dated + placed.localRow) * (itemHeight + ROW_GAP);
+    items.push(orderedBox(placed, itemY, itemHeight, selected.has(placed.item.id), measure));
+  }
 
   return {
     lanes,
@@ -184,28 +254,166 @@ export function layoutScene(input: SceneLayoutInput): SceneModel {
     contentHeight,
     viewportWidth: width,
     overscanPx: overscan,
+    before: ordered.before,
   };
 }
 
-function withLabelExtents(
-  items: readonly TimelineItem[],
-  scale: Scale,
-  itemHeight: number,
+const BEFORE_BAND_PX = 220;
+const BEFORE_LABEL = "Before reckoning";
+
+interface OrderedMark {
+  item: OrderedItem;
+  x: number;
+  localRow: number;
+  pinned: boolean;
+  eraLabel: string;
+  labelLimit: number;
+}
+
+function layoutOrdered(input: {
+  ordered: readonly OrderedItem[];
+  eras: readonly TimelineItem[];
+  calendars: readonly CalendarEngine[];
+  scale: Scale;
+  left: number;
+  right: number;
+  itemHeight: number;
+  measure: (title: string) => number;
+}): { marks: OrderedMark[]; extraRows: Map<string, number>; before: { width: number; label: string } | null } {
+  const groups = groupOrderedItems(input.ordered, eraAnchors(input.eras, input.calendars));
+  const eraById = new Map(input.eras.map((era) => [era.id, era]));
+  const pending: Array<Omit<OrderedMark, "localRow">> = [];
+  let needsBefore = false;
+
+  for (const group of groups) {
+    const era = eraById.get(group.eraKey);
+    const extent = era ? extentOf(era) : null;
+    const unbounded =
+      group.unresolved ||
+      group.eraKey === BEFORE_RECKONING ||
+      !extent ||
+      !Number.isFinite(extent.from) ||
+      !Number.isFinite(extent.to) ||
+      !(extent.to > extent.from);
+    const span = !unbounded && extent ? clipSpan(input.scale.toPx(extent.from), input.scale.toPx(extent.to), input.left, input.right) : null;
+    if (unbounded || !span || span.width < 48) {
+      needsBefore = true;
+      const inner = BEFORE_BAND_PX - 16;
+      group.items.forEach((item, index) => {
+        const count = Math.max(group.items.length, 1);
+        pending.push({
+          item,
+          x: 8 + ((index + 0.5) * inner) / count,
+          pinned: true,
+          eraLabel: BEFORE_LABEL,
+          labelLimit: BEFORE_BAND_PX - 8,
+        });
+      });
+      continue;
+    }
+    group.items.forEach((item, index) => {
+      const count = Math.max(group.items.length, 1);
+      const inner = Math.max(span.width - 16, 1);
+      pending.push({
+        item,
+        x: span.x + 8 + ((index + 0.5) * inner) / count,
+        pinned: false,
+        eraLabel: group.label,
+        labelLimit: Number.POSITIVE_INFINITY,
+      });
+    });
+  }
+
+  const byLane = new Map<string, Array<Omit<OrderedMark, "localRow">>>();
+  for (const mark of pending) {
+    const laneId = mark.item.laneId ?? "";
+    const list = byLane.get(laneId);
+    if (list) list.push(mark);
+    else byLane.set(laneId, [mark]);
+  }
+
+  const marks: OrderedMark[] = [];
+  const extraRows = new Map<string, number>();
+  for (const [laneId, list] of byLane) {
+    list.sort((a, b) => a.x - b.x || a.item.order - b.item.order || a.item.id.localeCompare(b.item.id));
+    const rowEnds: number[] = [];
+    for (const mark of list) {
+      const reach = mark.x + pointMarkPad(input.itemHeight) + input.measure(mark.item.title) + LABEL_GAP;
+      let localRow = rowEnds.findIndex((end) => end <= mark.x - pointRadius(input.itemHeight));
+      if (localRow < 0) {
+        localRow = rowEnds.length;
+        rowEnds.push(reach);
+      } else {
+        rowEnds[localRow] = reach;
+      }
+      marks.push({ ...mark, localRow });
+    }
+    extraRows.set(laneId, Math.max(rowEnds.length, 1));
+  }
+
+  const byRow = new Map<string, OrderedMark[]>();
+  for (const mark of marks) {
+    const key = `${mark.item.laneId ?? ""}:${mark.localRow}`;
+    const list = byRow.get(key);
+    if (list) list.push(mark);
+    else byRow.set(key, [mark]);
+  }
+  for (const list of byRow.values()) {
+    list.sort((a, b) => a.x - b.x);
+    for (let index = 0; index < list.length; index++) {
+      const mark = list[index];
+      const next = list[index + 1];
+      if (!mark) continue;
+      let limit = next ? next.x - pointRadius(input.itemHeight) - LABEL_GAP : Number.POSITIVE_INFINITY;
+      if (mark.pinned) limit = Math.min(limit, BEFORE_BAND_PX - 8);
+      mark.labelLimit = limit;
+    }
+  }
+
+  return {
+    marks,
+    extraRows,
+    before: needsBefore ? { width: BEFORE_BAND_PX, label: BEFORE_LABEL } : null,
+  };
+}
+
+function orderedBox(
+  mark: OrderedMark,
+  y: number,
+  height: number,
+  selected: boolean,
   measure: (title: string) => number
-): TimelineItem[] {
-  const pxPerDay = scale.pxPerDay;
-  if (!(pxPerDay > 0)) return items.slice();
-  return items.map((item) => {
-    if (!isPoint(item)) return item;
-    const reachPx = pointMarkPad(itemHeight) + measure(item.title) + LABEL_GAP;
-    const extentTo = Math.max(item.extentTo, item.start + reachPx / pxPerDay);
-    if (extentTo === item.extentTo) return item;
-    return { ...item, extentTo };
-  });
+): ItemBox {
+  const labelX = mark.x + pointMarkPad(height);
+  const label = ellipsizeToPx(mark.item.title, mark.labelLimit - labelX, measure);
+  return {
+    id: mark.item.id,
+    kind: "event",
+    title: mark.item.title,
+    label,
+    labelX,
+    labelOutside: false,
+    tooltip: itemTooltip(mark.item.title, mark.item.certainty, mark.item.displayHint, mark.eraLabel),
+    hint: mark.item.displayHint ?? "",
+    ...(mark.item.certainty ? { certainty: mark.item.certainty } : {}),
+    ordered: true,
+    pinned: mark.pinned,
+    x: mark.x,
+    y,
+    width: height,
+    height,
+    shape: "point",
+    bracket: null,
+    laneId: mark.item.laneId ?? "",
+    tags: mark.item.tags.join(" "),
+    ...(mark.item.color ? { color: mark.item.color } : {}),
+    selected,
+  };
 }
 
 function placeItem(
   item: TimelineItem,
+  calendar: CalendarEngine,
   scale: Scale,
   y: number,
   height: number,
@@ -224,7 +432,11 @@ function placeItem(
     label: "",
     labelX: 0,
     labelOutside: false,
-    tooltip: item.parseError ? `${item.title} — ${item.parseError}` : item.title,
+    tooltip: itemTooltip(item.title, item.certainty, item.displayHint, yearsAgoLabel(calendar, item), item.parseError),
+    hint: item.displayHint ?? "",
+    ...(item.certainty ? { certainty: item.certainty } : {}),
+    ordered: false,
+    pinned: false,
     y,
     height,
     laneId: item.laneId ?? "",
@@ -315,4 +527,32 @@ function clipSpan(x0: number, x1: number, left: number, right: number): { x: num
 
 function isPoint(item: TimelineItem): boolean {
   return item.kind === "event" && item.end === null;
+}
+
+function itemTooltip(
+  title: string,
+  certainty: Certainty | undefined,
+  hint: string | undefined,
+  when?: string,
+  parseError?: string
+): string {
+  const lines = [title];
+  if (when) lines.push(when);
+  if (certainty) lines.push(certainty);
+  if (hint) lines.push(hint);
+  if (parseError) lines.push(parseError);
+  return lines.join("\n");
+}
+
+/** Years-ago label for a before-present display calendar. Note text is not rewritten. */
+function yearsAgoLabel(calendar: CalendarEngine, item: TimelineItem): string | undefined {
+  if (calendar.def.display?.mode !== "before-present") return undefined;
+  try {
+    const start = formatYearsAgo(calendar.def, calendar.toAbsoluteYear(calendar.fromDays(item.start, "year")));
+    if (item.end === null) return start;
+    const end = formatYearsAgo(calendar.def, calendar.toAbsoluteYear(calendar.fromDays(item.end, "year")));
+    return `${start} – ${end}`;
+  } catch {
+    return undefined;
+  }
 }

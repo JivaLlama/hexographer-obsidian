@@ -1,9 +1,27 @@
 import fs from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
-import { createCalendar, createScale, GREGORIAN, parseCalendarDocument, RECKONING } from "../src/core";
+import {
+  applyPlanToNote,
+  calendarForItem,
+  commitPan,
+  createCalendar,
+  createScale,
+  parseTimelineNote,
+  planMove,
+  RECKONING,
+  scanVault,
+  zoomToFit,
+} from "../src/core";
 import { layoutTicks } from "../src/views/timeline/scene/axis";
-import { buildLanes, cameraForDataset, itemsFromNotes, stubDataset, visibleRange } from "../src/views/timeline/scene/dataset";
+import {
+  buildLanes,
+  cameraForDataset,
+  notesFromMarkdown,
+  stubDataset,
+  visibleRange,
+  yearsAgoDataset,
+} from "../src/views/timeline/scene/dataset";
 import {
   ellipsizeToPx,
   estimateLabelPx,
@@ -11,24 +29,25 @@ import {
   layoutScene,
   pointRadius,
 } from "../src/views/timeline/scene/layout";
-import { commitPan, dayUnderPixel, fitRange, localX, zoomAround } from "../src/views/timeline/scene/rebase";
 
 describe("scale re-base", () => {
   it("keeps scene x relative to a local origin", () => {
     const origin = 10_000_000;
     const pxPerDay = 0.4;
-    expect(localX(origin, origin, pxPerDay)).toBe(0);
-    expect(localX(origin + 25, origin, pxPerDay)).toBeCloseTo(10);
-    expect(Math.abs(localX(origin + 25, 0, pxPerDay))).toBeGreaterThan(1_000_000);
+    const local = createScale({ originDays: origin, pxPerDay, minPxPerDay: 1e-9, maxPxPerDay: 10 });
+    const rooted = createScale({ originDays: 0, pxPerDay, minPxPerDay: 1e-9, maxPxPerDay: 10 });
+    expect(local.toPx(origin)).toBe(0);
+    expect(local.toPx(origin + 25)).toBeCloseTo(10);
+    expect(Math.abs(rooted.toPx(origin + 25))).toBeGreaterThan(1_000_000);
   });
 
   it("commits a pan without moving the day under a pixel", () => {
     const scale = createScale({ originDays: 1_500_000.5, pxPerDay: 2.5, minPxPerDay: 1e-6, maxPxPerDay: 400 });
     const translate = -180;
     const pixel = 240;
-    const before = dayUnderPixel(scale, pixel, translate);
+    const before = scale.toDays(pixel - translate);
     const next = commitPan(scale, translate);
-    expect(dayUnderPixel(next, pixel, 0)).toBeCloseTo(before);
+    expect(next.toDays(pixel)).toBeCloseTo(before);
     expect(next.pxPerDay).toBe(scale.pxPerDay);
     expect(commitPan(scale, 0)).toBe(scale);
   });
@@ -46,8 +65,8 @@ describe("scale re-base", () => {
         minPxPerDay: 1e-8,
         maxPxPerDay: 20_000,
       });
-      const day = dayUnderPixel(scale, sample.focus, sample.translate);
-      const next = zoomAround(scale, sample.translate, sample.focus, sample.factor);
+      const day = scale.toDays(sample.focus - sample.translate);
+      const next = commitPan(scale, sample.translate).zoomAt(sample.focus, sample.factor);
       expect(next.toDays(sample.focus)).toBeCloseTo(day);
       expect(next.toPx(day)).toBeCloseTo(sample.focus);
       expect(Math.abs(next.toPx(day))).toBeLessThan(1_000);
@@ -56,11 +75,12 @@ describe("scale re-base", () => {
 
   it("fits a range inside the viewport and centers it when zoom is clamped", () => {
     const limits = { minPxPerDay: 0.01, maxPxPerDay: 8 };
-    const fitted = fitRange(limits, { from: 1000, to: 1100 }, 800, 40);
+    const base = () => createScale({ minPxPerDay: limits.minPxPerDay, maxPxPerDay: limits.maxPxPerDay });
+    const fitted = zoomToFit(base(), { from: 1000, to: 1100 }, 800, 40);
     expect(fitted.toPx(1000)).toBeCloseTo(40);
     expect(fitted.toPx(1100)).toBeCloseTo(760);
 
-    const clamped = fitRange(limits, { from: 0, to: 1 }, 800, 20);
+    const clamped = zoomToFit(base(), { from: 0, to: 1 }, 800, 20);
     expect(clamped.pxPerDay).toBe(8);
     expect(clamped.toPx(0.5)).toBeCloseTo(400);
   });
@@ -84,7 +104,7 @@ describe("axis and virtualization", () => {
     expect(scale.toPx(range.from)).toBeGreaterThanOrEqual(-1);
     expect(scale.toPx(range.to)).toBeLessThanOrEqual(901);
     const lanes = buildLanes(dataset.items, dataset.config.lanes?.order);
-    expect(lanes.map((lane) => lane.label)).toEqual(["House Vey", "Climate", "Treaties"]);
+    expect(lanes.map((lane) => lane.label)).toEqual(["House Vey", "Climate", "Treaties", "Records"]);
   });
 
   it("draws calendar ticks in local pixels and drops items outside the window", () => {
@@ -267,7 +287,7 @@ describe("axis and virtualization", () => {
     expect(bar?.label.endsWith("…") || bar?.label === "").toBe(true);
     expect(bar?.label).not.toBe(siege.title);
     const error = model.items.find((item) => item.id === broken.id);
-    expect(error?.tooltip).toBe("Treaty of Amber — Unknown month");
+    expect(error?.tooltip).toBe("Treaty of Amber\nUnknown month");
     expect(error?.parseError).toBe("Unknown month");
   });
 
@@ -280,29 +300,153 @@ describe("axis and virtualization", () => {
   });
 });
 
+describe("certainty, order, and years-ago", () => {
+  it("shows certainty and displayHint, and a drag leaves the hint intact", () => {
+    const markdown = `---
+type: span
+calendar: reckoning
+start: "3A 416"
+end: "3A 424"
+lane: "[[Climate]]"
+certainty: uncertain
+displayHint: "dates are approximate"
+---
+# Dry Interval
+`;
+    const calendars = [createCalendar(RECKONING)];
+    const item = parseTimelineNote(markdown, {
+      path: "samples/timeline/spans/Dry Interval.md",
+      calendars,
+      defaultCalendarId: "reckoning",
+    });
+    expect(item?.certainty).toBe("uncertain");
+    expect(item?.displayHint).toBe("dates are approximate");
+    if (!item) return;
+    const plan = planMove(item, 400, "move", { fine: false, calendar: calendarForItem(item, calendars) });
+    expect(plan.command.patches.every((patch) => patch.fields.every((field) => field.key !== "displayHint"))).toBe(true);
+    const written = applyPlanToNote(markdown, plan);
+    expect(written).toContain("displayHint: dates are approximate");
+    expect(written).toContain("certainty: uncertain");
+    const again = parseTimelineNote(written, {
+      path: item.id,
+      calendars,
+      defaultCalendarId: "reckoning",
+    });
+    expect(again?.displayHint).toBe("dates are approximate");
+    expect(again?.source.startRaw).not.toBe(item.source.startRaw);
+
+    const sample = stubDataset();
+    const camera = cameraForDataset(sample, 900);
+    const scale = createScale({
+      originDays: camera.originDays,
+      pxPerDay: camera.pxPerDay,
+      minPxPerDay: 1e-9,
+      maxPxPerDay: 100_000,
+    });
+    const model = layoutScene({
+      items: sample.items,
+      ordered: sample.ordered,
+      calendars: sample.calendars,
+      lanes: buildLanes(sample.items, sample.config.lanes?.order, sample.ordered),
+      calendar: sample.calendar,
+      scale,
+      viewportWidth: 900,
+      itemHeight: 22,
+      overscanPx: 40,
+      minLabelPx: 64,
+      selection: [],
+    });
+    const dry = model.items.find((entry) => entry.title === "Dry Interval");
+    expect(dry?.certainty).toBe("uncertain");
+    expect(dry?.hint).toBe("dates are approximate");
+    expect(dry?.tooltip).toContain("uncertain");
+    expect(dry?.tooltip).toContain("dates are approximate");
+    const open = model.items.find((entry) => entry.title === "Open Marker");
+    expect(open?.certainty).toBe("open");
+    const earlier = model.items.find((entry) => entry.title === "Earlier Note");
+    expect(earlier?.ordered).toBe(true);
+    expect(earlier?.pinned).toBe(true);
+    expect(model.before?.label).toBe("Before reckoning");
+    const steps = model.items.filter((entry) => entry.title.startsWith("Step "));
+    expect(steps).toHaveLength(3);
+    expect(steps.every((entry) => entry.ordered && !entry.pinned)).toBe(true);
+    const rows = new Set(steps.map((entry) => entry.y));
+    const xs = [...steps].sort((a, b) => a.x - b.x);
+    for (let index = 0; index < xs.length - 1; index++) {
+      const current = xs[index];
+      const next = xs[index + 1];
+      if (!current || !next || current.y !== next.y || !current.label) continue;
+      expect(current.labelX + estimateLabelPx(current.label)).toBeLessThanOrEqual(next.x - pointRadius(next.height));
+    }
+    expect(rows.size).toBeGreaterThan(0);
+  });
+
+  it("labels a before-present axis in years ago", () => {
+    const datasetAgo = yearsAgoDataset();
+    expect(datasetAgo.calendar.def.display?.mode).toBe("before-present");
+    const camera = cameraForDataset(datasetAgo, 800);
+    const scale = createScale({
+      originDays: camera.originDays,
+      pxPerDay: camera.pxPerDay,
+      minPxPerDay: 1e-9,
+      maxPxPerDay: 100_000,
+    });
+    const ticks = layoutTicks(datasetAgo.calendar, scale, 800, 20, 48);
+    expect(ticks.some((tick) => tick.major && tick.label.endsWith(" ya"))).toBe(true);
+    const model = layoutScene({
+      items: datasetAgo.items,
+      ordered: datasetAgo.ordered,
+      calendars: datasetAgo.calendars,
+      lanes: buildLanes(datasetAgo.items, datasetAgo.config.lanes?.order),
+      calendar: datasetAgo.calendar,
+      scale,
+      viewportWidth: 800,
+      itemHeight: 22,
+      overscanPx: 20,
+      minLabelPx: 48,
+      selection: [],
+    });
+    const middle = model.items.find((item) => item.title === "Middle Marker");
+    expect(middle?.tooltip).toContain("ya");
+    expect(middle?.hint).toBe("halfway");
+  });
+});
+
 describe("sample vault notes", () => {
   it("parses the sample timeline with the sample calendar file", () => {
     const root = process.cwd();
-    const calendar = createCalendar(
-      parseCalendarDocument(fs.readFileSync(path.join(root, "samples/calendars/reckoning.calendar.md"), "utf8"))
-    );
-    const gregorian = createCalendar(GREGORIAN);
     const dir = path.join(root, "samples/timeline");
     const notes = walkMarkdown(dir).filter((file) => !file.endsWith(`${path.sep}World Timeline.md`));
     expect(notes.length).toBeGreaterThanOrEqual(6);
-    const items = itemsFromNotes(
+    const calendars = walkMarkdown(path.join(root, "samples/calendars")).map((file) => ({
+      path: path.relative(root, file),
+      content: fs.readFileSync(file, "utf8"),
+    }));
+    const scan = scanVault(
+      [
+        ...calendars,
+        ...notes.map((file) => ({ path: path.relative(root, file), content: fs.readFileSync(file, "utf8") })),
+      ],
+      { defaultCalendarId: "gregorian" }
+    );
+    const parsed = notesFromMarkdown(
       notes.map((file) => ({ path: path.relative(root, file), markdown: fs.readFileSync(file, "utf8") })),
-      [gregorian, calendar],
+      scan.calendars,
       "reckoning"
     );
-    expect(items).toHaveLength(notes.length);
-    expect(items.every((item) => item.parseError === undefined)).toBe(true);
-    expect(items.some((item) => item.kind === "era")).toBe(true);
-    expect(items.some((item) => item.kind === "span")).toBe(true);
-    expect(items.some((item) => item.kind === "event" && item.end === null)).toBe(true);
+    expect(parsed.items.length + parsed.ordered.length).toBe(notes.length);
+    expect(parsed.items.every((item) => item.parseError === undefined)).toBe(true);
+    expect(parsed.items.some((item) => item.certainty === "uncertain")).toBe(true);
+    expect(parsed.items.some((item) => item.certainty === "open")).toBe(true);
+    expect(parsed.ordered.map((item) => item.order).sort()).toEqual([1, 1, 2, 3]);
+    expect(scan.calendars.some((engine) => engine.def.display?.mode === "before-present")).toBe(true);
+    expect(parsed.items.some((item) => item.kind === "era")).toBe(true);
+    expect(parsed.items.some((item) => item.kind === "span")).toBe(true);
+    expect(parsed.items.some((item) => item.kind === "event" && item.end === null)).toBe(true);
     const block = fs.readFileSync(path.join(dir, "World Timeline.md"), "utf8");
     expect(block).toContain("```worldtimeline");
     expect(block).toContain("samples/timeline");
+    expect(block).toContain("yearsago");
   });
 });
 

@@ -1,9 +1,8 @@
-import { createScale, filterItems, scaleLimitsForCalendar, type Scale, type ScaleLimits } from "../../../core";
+import { commitPan, createScale, filterItems, scaleLimitsForCalendar, type Scale, type ScaleLimits } from "../../../core";
 import { bindInteraction } from "../interaction/controller";
 import type { WheelAction } from "../interaction/wheel";
-import { buildLanes, cameraForDataset, stubDataset, type TimelineDataset } from "../scene/dataset";
+import { buildLanes, cameraForDataset, filterOrdered, stubDataset, type TimelineDataset } from "../scene/dataset";
 import { layoutScene } from "../scene/layout";
-import { commitPan, ZOOM_STEP, zoomAround } from "../scene/rebase";
 import { createTimelineView, type TimelineView } from "../scene/render";
 import { createViewStore, type ViewStore } from "../store";
 
@@ -13,6 +12,7 @@ export interface MountOptions {
   mobile: boolean;
   load: () => Promise<TimelineDataset>;
   onOpenFull?: () => void;
+  onOpenItem?: (itemId: string) => void;
   subscribeRefresh?: (listener: () => void) => () => void;
 }
 
@@ -21,7 +21,9 @@ export interface TimelineMount {
   destroy(): void;
 }
 
-const HINT_INLINE = "Click the timeline, then the wheel pans time. Ctrl or Cmd+wheel zooms. Shift+wheel or a horizontal trackpad pans without taking the note scroll. F fits. Double-click empty space zooms in.";
+const ZOOM_STEP = 1.6;
+
+const HINT_INLINE = "Click the timeline, then the wheel pans time. Ctrl or Cmd+wheel zooms. Shift+wheel or a horizontal trackpad pans without taking the note scroll. F fits. Double-click empty space zooms in. Double-click an item to open its note.";
 const HINT_FULL = "Wheel pans time. Shift+wheel scrolls lanes. Ctrl or Cmd+wheel zooms. Drag empty space pans. F fits. Double-click empty space zooms in.";
 
 /**
@@ -61,9 +63,12 @@ export function mountTimeline(options: MountOptions): TimelineMount {
     const snapshot = store.get();
     const scale = currentScale();
     const filtered = filterItems(dataset.items, snapshot.filters);
+    const ordered = filterOrdered(dataset.ordered, snapshot.filters);
     const model = layoutScene({
       items: filtered,
-      lanes: buildLanes(filtered, dataset.config.lanes?.order),
+      ordered,
+      calendars: dataset.calendars,
+      lanes: buildLanes(filtered, dataset.config.lanes?.order, ordered),
       calendar: dataset.calendar,
       scale,
       viewportWidth: width,
@@ -82,7 +87,8 @@ export function mountTimeline(options: MountOptions): TimelineMount {
       view.setStatus("Loading timeline…");
       return;
     }
-    const count = filterItems(dataset.items, store.get().filters).length;
+    const filters = store.get().filters;
+    const count = filterItems(dataset.items, filters).length + filterOrdered(dataset.ordered, filters).length;
     const source = dataset.origin === "stub" ? "Sample dates" : dataset.calendar.def.name;
     const text = dataset.notice ? `${source} · ${dataset.notice}` : `${source} · ${count} items`;
     view.setStatus(text, options.surface === "inline" ? HINT_INLINE : HINT_FULL);
@@ -105,7 +111,7 @@ export function mountTimeline(options: MountOptions): TimelineMount {
   };
 
   const zoomAt = (focusX: number, factor: number): void => {
-    const next = zoomAround(currentScale(), translateX, focusX, factor);
+    const next = commitPan(currentScale(), translateX).zoomAt(focusX, factor);
     translateX = 0;
     rememberCamera(next.originDays, next.pxPerDay);
     view.setTranslate(0);
@@ -153,6 +159,9 @@ export function mountTimeline(options: MountOptions): TimelineMount {
     onClick(itemId) {
       store.setSelection(itemId ? [itemId] : []);
       renderScene();
+    },
+    onOpenItem(itemId) {
+      options.onOpenItem?.(itemId);
     },
     onDoubleTap(x) {
       zoomAt(x, ZOOM_STEP);

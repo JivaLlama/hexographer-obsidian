@@ -11,6 +11,7 @@ export interface InteractionHost {
   onPinch(effect: { factor: number; focusX: number; focusY: number; dx: number; dy: number }): void;
   onDrag(effect: { dx: number; dy: number; itemId: string }): void;
   onClick(itemId: string | null): void;
+  onOpenItem?(itemId: string): void;
   onHover(itemId: string | null): void;
   onDoubleTap(x: number): void;
   onGestureEnd(): void;
@@ -85,7 +86,12 @@ export function bindInteraction(view: TimelineView, host: InteractionHost): () =
   };
 
   const onDblClick = (event: MouseEvent): void => {
-    if (hitItem(event.target)) return;
+    const itemId = hitItem(event.target);
+    if (itemId) {
+      event.preventDefault();
+      host.onOpenItem?.(itemId);
+      return;
+    }
     event.preventDefault();
     host.onZoomStep(view.scenePoint(event.clientX, event.clientY).x);
   };
@@ -147,8 +153,14 @@ function pointerInput(
     button: event.button,
     pointerType: kind,
     itemId: phase === "down" ? hitItem(event.target) : null,
-    readOnly: host.isReadOnly(),
+    readOnly: host.isReadOnly() || (phase === "down" && hitOrdered(event.target)),
   };
+}
+
+function hitOrdered(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  const owner = target.closest("[data-id]");
+  return owner?.getAttribute("data-ordered") === "true";
 }
 
 function hitItem(target: EventTarget | null): string | null {

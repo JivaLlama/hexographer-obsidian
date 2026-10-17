@@ -78,8 +78,16 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
   labelProbe.setAttribute("opacity", "0");
   labelProbe.setAttribute("pointer-events", "none");
   labelProbe.setAttribute("aria-hidden", "true");
+  labelProbe.setAttribute("y", "-40");
   labelProbe.textContent = "Mg";
-  scene.append(pan, labelProbe);
+  const beforeLayer = svgEl("g");
+  beforeLayer.classList.add("wt-before");
+  scene.append(pan, beforeLayer, labelProbe);
+
+  const axisBefore = document.createElement("div");
+  axisBefore.className = "wt-axis-before";
+  axisBefore.hidden = true;
+  axis.append(axisBefore);
 
   sceneWrap.append(scene);
   body.append(laneCol, sceneWrap);
@@ -147,6 +155,7 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
       eras.replaceChildren();
       lanes.replaceChildren();
       items.replaceChildren();
+      beforeLayer.replaceChildren();
       ghost.replaceChildren();
       axisTrack.replaceChildren();
       laneCol.replaceChildren();
@@ -201,6 +210,23 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
         laneCol.append(label);
       }
 
+      if (model.before) {
+        axisBefore.hidden = false;
+        axisBefore.style.width = `${model.before.width}px`;
+        axisBefore.textContent = model.before.label;
+        const band = svgEl("rect");
+        band.classList.add("wt-before-band");
+        band.setAttribute("x", "0");
+        band.setAttribute("y", "0");
+        band.setAttribute("width", String(model.before.width));
+        band.setAttribute("height", String(height));
+        beforeLayer.append(band);
+      } else {
+        axisBefore.hidden = true;
+        axisBefore.textContent = "";
+        axisBefore.style.width = "";
+      }
+
       for (const item of model.items) {
         const group = svgEl("g");
         group.setAttribute(
@@ -215,6 +241,11 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
         group.setAttribute(WT_DATA.type, item.kind);
         group.setAttribute(WT_DATA.tags, item.tags);
         group.setAttribute(WT_DATA.lane, item.laneId);
+        if (item.certainty) group.setAttribute(WT_DATA.certainty, item.certainty);
+        if (item.ordered) {
+          group.classList.add("wt-ordered");
+          group.setAttribute("data-ordered", "true");
+        }
         group.setAttribute("aria-label", item.title);
         if (item.color) group.style.setProperty(WT_VAR.itemFill, item.color);
         const tip = svgEl("title");
@@ -259,6 +290,15 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
           text.textContent = item.label;
           group.append(text);
         }
+        if (item.hint) {
+          const hint = svgEl("text");
+          hint.classList.add("wt-item-hint");
+          hint.setAttribute("x", round(item.labelX));
+          hint.setAttribute("y", round(item.y + item.height / 2 + 9));
+          hint.setAttribute("dominant-baseline", "middle");
+          hint.textContent = item.hint;
+          group.append(hint);
+        }
 
         if (item.parseError) {
           const badge = svgEl("circle");
@@ -272,7 +312,7 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
           group.append(badge);
         }
 
-        items.append(group);
+        (item.pinned ? beforeLayer : items).append(group);
       }
 
       for (const tick of model.ticks) {

@@ -9,10 +9,22 @@ calendar: reckoning
 source:
   folders: [samples/timeline]
 lanes:
-  order: ["[[House Vey]]", "[[Climate]]", "[[Treaties]]"]
+  order: ["[[House Vey]]", "[[Climate]]", "[[Treaties]]", "[[Records]]"]
 view:
   from: "3A 370"
   to: "3A 450"
 ```
 
-Dates use the Reckoning calendar in `samples/calendars/reckoning.calendar.md`. The notes under this folder are the era, the spans, and the events.
+Dates use the Reckoning calendar in `samples/calendars/reckoning.calendar.md`. The notes under this folder are the era, the spans, and the events. Uncertain and open notes show certainty. Ordered notes have `order` and `era` and no `start`.
+
+A second block labels generic markers in years before a present year. The axis uses years-ago labels. The notes still store absolute years.
+
+```worldtimeline
+calendar: yearsago
+source:
+  folders: [samples/timeline/yearsago]
+view:
+  from: "600"
+  to: "1700"
+```
+

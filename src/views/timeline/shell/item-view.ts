@@ -1,6 +1,6 @@
-import { ItemView, Platform, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
+import { ItemView, Platform, type Plugin, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
 import { WORLD_TIMELINE_VIEW, readLeafState, type TimelineLeafState } from "./constants";
-import { loadTimeline } from "./load";
+import { loadTimeline, openTimelineNote, vaultSettings } from "./load";
 import { mountTimeline, type TimelineMount } from "./mount";
 import type { RefreshBus } from "./refresh";
 
@@ -10,6 +10,7 @@ export class TimelineItemView extends ItemView {
 
   constructor(
     leaf: WorkspaceLeaf,
+    private readonly plugin: Plugin,
     private readonly bus: RefreshBus
   ) {
     super(leaf);
@@ -49,7 +50,10 @@ export class TimelineItemView extends ItemView {
       container: this.contentEl,
       surface: "full",
       mobile: Platform.isMobile,
-      load: () => loadTimeline(this.app, this.leafState.configYaml),
+      load: async () => loadTimeline(this.app, this.leafState.configYaml, await vaultSettings(this.plugin)),
+      onOpenItem: (itemId) => {
+        void openTimelineNote(this.plugin, itemId, this.leafState.sourcePath);
+      },
       subscribeRefresh: (listener) => this.bus.subscribe(listener),
     });
   }

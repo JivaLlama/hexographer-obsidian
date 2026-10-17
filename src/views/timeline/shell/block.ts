@@ -1,6 +1,6 @@
 import { MarkdownRenderChild, Platform, type Plugin } from "obsidian";
 import type { TimelineLeafState } from "./constants";
-import { loadTimeline } from "./load";
+import { loadTimeline, openTimelineNote, vaultSettings } from "./load";
 import { mountTimeline, type TimelineMount } from "./mount";
 import { openWorldTimeline } from "./open";
 import type { RefreshBus } from "./refresh";
@@ -30,9 +30,12 @@ class TimelineBlock extends MarkdownRenderChild {
       container: this.containerEl,
       surface: "inline",
       mobile: Platform.isMobile,
-      load: () => loadTimeline(this.plugin.app, this.source),
+      load: async () => loadTimeline(this.plugin.app, this.source, await vaultSettings(this.plugin)),
       onOpenFull: () => {
         void openWorldTimeline(this.plugin, state);
+      },
+      onOpenItem: (itemId) => {
+        void openTimelineNote(this.plugin, itemId, this.sourcePath);
       },
       subscribeRefresh: (listener) => this.bus.subscribe(listener),
     });

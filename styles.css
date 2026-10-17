@@ -206,6 +206,10 @@
   --wt-accent: var(--interactive-accent);
   --wt-selection: var(--interactive-accent);
   --wt-error-badge: var(--text-error, #e06c75);
+  --wt-certainty-locked: 1;
+  --wt-certainty-working: 0.85;
+  --wt-certainty-uncertain: 0.6;
+  --wt-certainty-open: 0.4;
 
   box-sizing: border-box;
   display: flex;
@@ -464,6 +468,68 @@
 
 .wt-timeline .wt-item text {
   pointer-events: auto;
+}
+
+.wt-item[data-certainty="locked"] rect:not(.wt-bracket),
+.wt-item[data-certainty="locked"] polygon {
+  opacity: var(--wt-certainty-locked);
+}
+
+.wt-item[data-certainty="working"] rect:not(.wt-bracket),
+.wt-item[data-certainty="working"] polygon {
+  opacity: var(--wt-certainty-working);
+}
+
+.wt-item[data-certainty="uncertain"] rect:not(.wt-bracket),
+.wt-item[data-certainty="uncertain"] polygon {
+  opacity: var(--wt-certainty-uncertain);
+  stroke-dasharray: 4 3;
+}
+
+.wt-item[data-certainty="open"] rect:not(.wt-bracket),
+.wt-item[data-certainty="open"] polygon {
+  fill: transparent;
+  stroke: var(--wt-item-fill);
+  stroke-dasharray: 4 3;
+  opacity: var(--wt-certainty-open);
+}
+
+.wt-item.wt-ordered,
+.wt-item.wt-ordered text {
+  cursor: not-allowed;
+}
+
+.wt-item-hint {
+  fill: var(--text-faint);
+  font-size: 9px;
+}
+
+.wt-before-band {
+  fill: var(--background-modifier-hover, #353535);
+  opacity: 0.72;
+}
+
+.wt-axis-before {
+  position: absolute;
+  left: 148px;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  box-sizing: border-box;
+  padding: 0 8px 6px;
+  background: var(--background-primary);
+  color: var(--text-muted);
+  font-size: 11px;
+  pointer-events: none;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.wt-timeline.is-mobile .wt-axis-before,
+.is-mobile .wt-timeline .wt-axis-before {
+  left: 84px;
 }
 
 .wt-item rect:not(.wt-bracket) {

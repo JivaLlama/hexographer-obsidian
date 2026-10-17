@@ -1,18 +1,21 @@
 import {
   createCalendar,
+  createScale,
   extentOf,
   filterItems,
   GREGORIAN,
   parseTimelineConfig,
-  parseTimelineNote,
+  parseTimelineNoteResult,
   RECKONING,
   scaleLimitsForCalendar,
+  zoomToFit,
   type CalendarEngine,
+  type FilterState,
   type Lane,
+  type OrderedItem,
   type TimelineConfig,
   type TimelineItem,
 } from "../../../core";
-import { fitRange } from "./rebase";
 import type { ViewState } from "../store";
 
 /**
@@ -21,6 +24,8 @@ import type { ViewState } from "../store";
  */
 export interface TimelineDataset {
   items: TimelineItem[];
+  ordered: OrderedItem[];
+  calendars: CalendarEngine[];
   calendar: CalendarEngine;
   config: TimelineConfig;
   origin: "vault" | "stub";
@@ -50,7 +55,11 @@ export function displayLaneLabel(laneId: string): string {
   return (wiki[2] || wiki[1]).trim();
 }
 
-export function buildLanes(items: readonly TimelineItem[], order: readonly string[] | undefined): Lane[] {
+export function buildLanes(
+  items: readonly TimelineItem[],
+  order: readonly string[] | undefined,
+  ordered: readonly OrderedItem[] = []
+): Lane[] {
   const ids: string[] = [];
   const seen = new Set<string>();
   const add = (id: string): void => {
@@ -63,6 +72,7 @@ export function buildLanes(items: readonly TimelineItem[], order: readonly strin
     if (item.kind === "era") continue;
     add(item.laneId ?? "");
   }
+  for (const item of ordered) add(item.laneId ?? "");
   if (ids.length === 0) ids.push("");
   return ids.map((id, index) => ({
     id,
@@ -104,8 +114,38 @@ export function cameraForDataset(dataset: TimelineDataset, viewportPx: number, p
   const filtered = filterItems(dataset.items, dataset.config.filters);
   const limits = scaleLimitsForCalendar(dataset.calendar, { viewportPx: width });
   const range = visibleRange(dataset.calendar, filtered, dataset.config.view);
-  const scale = fitRange(limits, range, width, padPx);
+  const scale = zoomToFit(
+    createScale({ minPxPerDay: limits.minPxPerDay, maxPxPerDay: limits.maxPxPerDay }),
+    range,
+    width,
+    padPx
+  );
   return { originDays: scale.originDays, pxPerDay: scale.pxPerDay, laneScroll: 0 };
+}
+
+/** Lane, tag, and kind filters for order-only notes. Dated items use `filterItems`. */
+export function filterOrdered(items: readonly OrderedItem[], filters: FilterState | undefined): OrderedItem[] {
+  if (!filters) return [...items];
+  return items.filter((item) => {
+    if (filters.kinds && filters.kinds.length > 0 && !filters.kinds.includes("event")) return false;
+    if (filters.lanes && filters.lanes.length > 0) {
+      const lane = (item.laneId ?? "").toLowerCase();
+      if (!filters.lanes.some((id) => id.toLowerCase() === lane)) return false;
+    }
+    if (filters.tagsAny && filters.tagsAny.length > 0) {
+      const tags = new Set(item.tags.map((tag) => tag.toLowerCase()));
+      if (!filters.tagsAny.some((tag) => tags.has(tag.toLowerCase()))) return false;
+    }
+    if (filters.tagsNone && filters.tagsNone.length > 0) {
+      const tags = new Set(item.tags.map((tag) => tag.toLowerCase()));
+      if (filters.tagsNone.some((tag) => tags.has(tag.toLowerCase()))) return false;
+    }
+    if (filters.calendars && filters.calendars.length > 0 && item.calendarId) {
+      const id = item.calendarId.toLowerCase();
+      if (!filters.calendars.some((calendar) => calendar.toLowerCase() === id)) return false;
+    }
+    return true;
+  });
 }
 
 export function itemsFromNotes(
@@ -113,17 +153,28 @@ export function itemsFromNotes(
   calendars: readonly CalendarEngine[],
   defaultCalendarId: string
 ): TimelineItem[] {
+  return notesFromMarkdown(notes, calendars, defaultCalendarId).items;
+}
+
+export function notesFromMarkdown(
+  notes: readonly { path: string; markdown: string }[],
+  calendars: readonly CalendarEngine[],
+  defaultCalendarId: string
+): { items: TimelineItem[]; ordered: OrderedItem[] } {
   const items: TimelineItem[] = [];
+  const ordered: OrderedItem[] = [];
   for (const note of notes) {
-    const item = parseTimelineNote(note.markdown, {
+    const result = parseTimelineNoteResult(note.markdown, {
       path: note.path,
       calendars,
       defaultCalendarId,
       title: titleFromPath(note.path),
     });
-    if (item) items.push(item);
+    if (!result) continue;
+    if (result.kind === "ordered") ordered.push(result.item);
+    else items.push(result.item);
   }
-  return items;
+  return { items, ordered };
 }
 
 /** Sample dates used when a block matches no notes. Built through the core parser. */
@@ -132,8 +183,26 @@ export function stubDataset(calendars?: readonly CalendarEngine[]): TimelineData
   const config = parseTimelineConfig(STUB_CONFIG, "reckoning");
   const calendar = list.find((engine) => engine.def.id === config.displayCalendarId) ?? list[0];
   const engines = list.some((engine) => engine.def.id === calendar.def.id) ? list : [...list, calendar];
+  const notes = notesFromMarkdown(STUB_NOTES, engines, calendar.def.id);
   return {
-    items: itemsFromNotes(STUB_NOTES, engines, calendar.def.id),
+    items: notes.items,
+    ordered: notes.ordered,
+    calendars: engines,
+    calendar,
+    config,
+    origin: "stub",
+  };
+}
+
+/** Second sample block: a before-present axis. Note strings stay absolute years. */
+export function yearsAgoDataset(): TimelineDataset {
+  const calendar = createCalendar(YEARS_AGO);
+  const config = parseTimelineConfig(YEARS_AGO_CONFIG, calendar.def.id);
+  const notes = notesFromMarkdown(YEARS_AGO_NOTES, [calendar], calendar.def.id);
+  return {
+    items: notes.items,
+    ordered: notes.ordered,
+    calendars: [calendar],
     calendar,
     config,
     origin: "stub",
@@ -173,7 +242,7 @@ calendar: reckoning
 source:
   folders: [samples/timeline]
 lanes:
-  order: ["[[House Vey]]", "[[Climate]]", "[[Treaties]]"]
+  order: ["[[House Vey]]", "[[Climate]]", "[[Treaties]]", "[[Records]]"]
 view:
   from: "3A 370"
   to: "3A 450"
@@ -283,6 +352,173 @@ lane: "[[Treaties]]"
 tags: [diplomacy]
 ---
 # Treaty of Amber
+`,
+  },
+  {
+    path: "samples/timeline/spans/Dry Interval.md",
+    markdown: `---
+type: span
+calendar: reckoning
+start: "3A 416"
+end: "3A 424"
+lane: "[[Climate]]"
+tags: [climate]
+certainty: uncertain
+displayHint: "dates are approximate"
+---
+# Dry Interval
+`,
+  },
+  {
+    path: "samples/timeline/events/Open Marker.md",
+    markdown: `---
+type: event
+calendar: reckoning
+start: "3A 438"
+lane: "[[Treaties]]"
+tags: [note]
+certainty: open
+displayHint: "not confirmed"
+---
+# Open Marker
+`,
+  },
+  {
+    path: "samples/timeline/eras/Opening.md",
+    markdown: `---
+type: era
+calendar: reckoning
+start: "3A 432"
+end: "3A 448"
+---
+# Opening
+`,
+  },
+  {
+    path: "samples/timeline/events/Step One.md",
+    markdown: `---
+type: event
+calendar: reckoning
+order: 1
+era: "[[Opening]]"
+lane: "[[Records]]"
+---
+# Step One
+`,
+  },
+  {
+    path: "samples/timeline/events/Step Two.md",
+    markdown: `---
+type: event
+calendar: reckoning
+order: 2
+era: "[[Opening]]"
+lane: "[[Records]]"
+displayHint: "middle of the sequence"
+---
+# Step Two
+`,
+  },
+  {
+    path: "samples/timeline/events/Step Three.md",
+    markdown: `---
+type: event
+calendar: reckoning
+order: 3
+era: "[[Opening]]"
+lane: "[[Records]]"
+---
+# Step Three
+`,
+  },
+  {
+    path: "samples/timeline/events/Earlier Note.md",
+    markdown: `---
+type: event
+order: 1
+era: "[[Not Listed]]"
+lane: "[[Records]]"
+certainty: working
+---
+# Earlier Note
+`,
+  },
+];
+
+const YEARS_AGO_CONFIG = `
+calendar: yearsago
+source:
+  folders: [samples/timeline/yearsago]
+view:
+  from: "600"
+  to: "1700"
+`;
+
+const YEARS_AGO = {
+  id: "yearsago",
+  name: "Years Ago",
+  epochOffset: 0,
+  hasYearZero: true,
+  weekdayOfEpoch: 0,
+  intercalaryInWeek: false,
+  time: { hoursPerDay: 24, minutesPerHour: 60 },
+  months: Array.from({ length: 12 }, (_, index) => ({
+    id: `m${index + 1}`,
+    name: `Month ${index + 1}`,
+    short: `M${index + 1}`,
+    days: 30,
+  })),
+  weekdays: Array.from({ length: 7 }, (_, index) => ({
+    id: `d${index + 1}`,
+    name: `Day ${index + 1}`,
+    short: `D${index + 1}`,
+  })),
+  leap: { kind: "cycle" as const, every: 4 },
+  eras: [],
+  formats: {
+    year: "{y}",
+    month: "{y}-{MM}",
+    day: "{y}-{MM}-{dd}",
+    hour: "{y}-{MM}-{dd} {HH}",
+    minute: "{y}-{MM}-{dd} {HH}:{mm}",
+    ago: "{ya}",
+  },
+  defaultFormat: "day",
+  display: { mode: "before-present" as const, presentYear: 2000, suffix: "ya" },
+};
+
+const YEARS_AGO_NOTES: readonly { path: string; markdown: string }[] = [
+  {
+    path: "samples/timeline/yearsago/Early Marker.md",
+    markdown: `---
+type: event
+calendar: yearsago
+start: "800"
+---
+# Early Marker
+`,
+  },
+  {
+    path: "samples/timeline/yearsago/Middle Marker.md",
+    markdown: `---
+type: event
+calendar: yearsago
+start: "1200"
+displayHint: "halfway"
+---
+# Middle Marker
+`,
+  },
+  {
+    path: "samples/timeline/yearsago/Late Span.md",
+    markdown: `---
+type: span
+calendar: yearsago
+start: "1400"
+end: "1600"
+certainty: working
+---
+# Late Span
 `,
   },
 ];
