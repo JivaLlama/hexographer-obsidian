@@ -27,7 +27,7 @@ export function parseTimelineConfig(yaml: string, fallbackCalendarId: string): T
   }
   const config: TimelineConfig = {
     source,
-    calendarId: typeof raw.calendar === "string" && raw.calendar ? raw.calendar : fallbackCalendarId,
+    displayCalendarId: displayCalendarId(raw, fallbackCalendarId),
   };
   if (raw.lanes && typeof raw.lanes === "object" && !Array.isArray(raw.lanes)) {
     const lanes = raw.lanes as Record<string, unknown>;
@@ -53,9 +53,13 @@ function readFilters(raw: Record<string, unknown>): FilterState {
   const tagsAny = stringList(raw.tagsAny);
   const tagsNone = stringList(raw.tagsNone);
   const lanes = stringList(raw.lanes);
+  const calendars = stringList(raw.calendars ?? raw.calendar);
+  const cultures = stringList(raw.cultures ?? raw.culture);
   if (tagsAny) filters.tagsAny = tagsAny;
   if (tagsNone) filters.tagsNone = tagsNone;
   if (lanes) filters.lanes = lanes;
+  if (calendars) filters.calendars = calendars;
+  if (cultures) filters.cultures = cultures;
   if (typeof raw.text === "string") filters.text = raw.text;
   if (Array.isArray(raw.kinds)) {
     filters.kinds = raw.kinds.filter((kind): kind is ItemKind => typeof kind === "string" && KINDS.includes(kind as ItemKind));
@@ -67,6 +71,12 @@ function readFilters(raw: Record<string, unknown>): FilterState {
     }
   }
   return filters;
+}
+
+function displayCalendarId(raw: Record<string, unknown>, fallbackCalendarId: string): string {
+  if (typeof raw.displayCalendar === "string" && raw.displayCalendar) return raw.displayCalendar;
+  if (typeof raw.calendar === "string" && raw.calendar) return raw.calendar;
+  return fallbackCalendarId;
 }
 
 function stringList(value: unknown): string[] | undefined {

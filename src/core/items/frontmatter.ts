@@ -44,6 +44,7 @@ export function parseTimelineNote(markdown: string, options: ParseTimelineNoteOp
 
   const calendarId = typeof fields.calendar === "string" && fields.calendar ? fields.calendar : options.defaultCalendarId;
   const calendar = options.calendars.find((engine) => engine.def.id === calendarId);
+  const culture = scalarString(fields.culture)?.trim();
   const startRaw = scalarString(fields.start) ?? "";
   const endRaw = scalarString(fields.end);
   const title = options.title ?? titleFrom(split.body, options.path);
@@ -62,6 +63,8 @@ export function parseTimelineNote(markdown: string, options: ParseTimelineNoteOp
     endPrecision: null,
     laneId,
     tags,
+    calendarId,
+    ...(culture ? { culture } : {}),
     links: {
       places: readLinkList(fields.places),
       people: readLinkList(fields.people),
@@ -136,6 +139,13 @@ export function serializeTimelineNote(markdown: string, update: TimelineWritebac
   else if (update.color !== undefined) fields.color = update.color;
   const body = split ? split.body : markdown;
   return joinFrontmatter(stringifyYaml(fields), body);
+}
+
+/** The engine whose strings this note stores. Throws when that id is not loaded. */
+export function calendarForItem(item: TimelineItem, calendars: readonly CalendarEngine[]): CalendarEngine {
+  const found = calendars.find((engine) => engine.def.id === item.calendarId);
+  if (!found) throw new Error(`unknown calendar "${item.calendarId}"`);
+  return found;
 }
 
 export function applyPlanToNote(

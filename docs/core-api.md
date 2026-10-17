@@ -12,11 +12,15 @@ The plugin entry does not import the core yet. The hex painter is unchanged.
 - `startPrecision` and `endPrecision` are independent. `"3A 412"` to `"3A 412 Frostmoot 9"` is legal. `endPrecision` is `null` when there is no end.
 - `extentTo` is the exclusive end of the occupied interval, computed when the note is parsed. Draw bars and zoomed-in point brackets from `extentOf(item)`, which is `{ from: item.start, to: item.extentTo }`. A year-precision end includes that whole year. Do not call the calendar engine for this.
 - `laneId` is the frontmatter string (`"[[House Vey]]"`), or `null` for eras and unlaned items.
-- `parseError` is set when a date fails. The item is still returned.
+- `calendarId` is the calendar of this note's date strings. Frontmatter `calendar: reckoning` sets it. When the key is missing, parsing uses the vault default passed as `defaultCalendarId`. `source.calendarId` is the same id.
+- `culture` is an optional frontmatter string (`culture: "[[Tideborn]]"`). It is independent of `calendarId`: two cultures may share a calendar. Omit the key and the field is absent.
+- `parseError` is set when a date fails, or when `calendar` names an engine that was not loaded. The item is still returned.
 - `links.other` is always `[]` in this phase. `places` and `people` come from frontmatter. Body wikilinks are not scanned.
 - `source.startRaw` / `source.endRaw` are the original strings.
 
 `FilterState.range` is half-open `[from, to)` on world days. `itemMatches` / `filterItems` implement it. An era ignores a lane filter and still has to pass the other filters.
+
+`FilterState.calendars` matches `item.calendarId`. `FilterState.cultures` matches `item.culture`. Both comparisons trim and ignore case. An item with no culture fails a non-empty culture list. Eras are included in both. A culture timeline sets both. A master timeline leaves them empty and shows every item. Text search also looks at the culture and the calendar id.
 
 `EditCommand` is `{ label, patches: [{ path, fields: [{ key, before, after }] }] }`. One drag is one command.
 
@@ -27,6 +31,8 @@ planMove(item, deltaDays, mode, { fine, calendar })
 ```
 
 `mode` is `"move" | "resize-start" | "resize-end"`. `deltaDays` is a world-day offset; convert pixels with `Scale` before calling. The result is `{ start, end, startRaw, endRaw, command }`. Use `startRaw` / `endRaw` for the ghost tooltip and for writeback. They are the same strings.
+
+Pass `calendarForItem(item, calendars)` as `calendar`. That is the note's calendar, not the display calendar. `planMove` throws when the ids differ, so a drag cannot rewrite a Harbor date as a Reckoning string. `applyPlanToNote` does not add or change `calendar` or `culture`. A note that omitted `calendar` still omits it after the drag, and a later parse with the same vault default reads it back.
 
 - Move shifts both ends by the same number of calendar units (years, months, …), then formats each end at its own precision.
 - `fine: true` (Alt) steps that precision down one level and writes the finer pattern.
@@ -57,15 +63,18 @@ scaleLimitsForCalendar(calendar, { viewportPx, minutePx, spanYears })
 
 World day 0 is proleptic Gregorian 1970-01-01 00:00 UTC. A calendar-local day 0 is absolute year 0, month 0, day 1. `epochOffset` is the world day of that local day 0.
 
-`toDays` / `fromDays` speak world days. `TimelineItem.start` is a world day. Relabel an instant with `other.fromDays(item.start)`.
+`toDays` / `fromDays` speak world days. `TimelineItem.start` is a world day. Relabel an instant on the master axis with the display calendar: `display.fromDays(item.start)` then `display.format`. Do not reformat the note.
 
 `convert(localDays, from, to)` rebases a count measured from `from`'s own day 0 onto `to`'s day 0 (`local + from.epochOffset - to.epochOffset`). Do not pass `item.start` through it.
+
+A vault has many calendars. One master timeline displays every item in any chosen calendar, because every item is already a world day. A culture timeline displays that culture's calendar and filters to its `calendarId` and `culture`. Harbor's local day 0 is world day 10000, so it does not share an epoch with Reckoning; the same world day still lines up on the master axis.
 
 ```ts
 createCalendar(def)   // throws on validateCalendar errors
 validateCalendar(def) // string[]; empty means usable
 GREGORIAN             // BCE/CE, Sunday-first weeks, nested leap rule
 RECKONING             // sample; see samples/calendars/reckoning.calendar.md
+HARBOR                // second sample; epochOffset 10000; samples/calendars/harbor.calendar.md
 parseCalendarDocument(markdown)
 serializeCalendarDocument(def, prose?)
 ```
@@ -105,6 +114,21 @@ Data attributes: `data-type`, `data-tags` (space-separated), `data-lane`, `data-
 ## Config
 
 `parseTimelineConfig(yaml, fallbackCalendarId)` reads a `worldtimeline` block. `source.query` is returned as a string. The shell evaluates it.
+
+`displayCalendarId` is the axis. YAML `displayCalendar` sets it. YAML `calendar` is the same key when `displayCalendar` is absent. It is not a filter, and it is not the calendar stored on a note.
+
+```yaml
+# Master: every item, labeled in Gregorian.
+displayCalendar: gregorian
+
+# Culture: Harbor notes of one people, labeled in the Harbor Count.
+displayCalendar: harbor
+filters:
+  calendars: [harbor]
+  cultures: ["[[Tideborn]]"]
+```
+
+`filters.calendar` and `filters.culture` are accepted as a single string and stored on `calendars` / `cultures`. `view.from` and `view.to` are strings in the display calendar.
 
 ## Checks
 

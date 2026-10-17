@@ -1,6 +1,7 @@
 export { calendarFromUnknown, parseCalendarDocument, serializeCalendarDocument } from "./document";
 export { convert, createCalendar, fromLocalDays, toLocalDays } from "./engine";
 export { GREGORIAN } from "./gregorian";
+export { HARBOR, HARBOR_EPOCH_OFFSET } from "./harbor";
 export { RECKONING } from "./reckoning";
 export type {
   CalendarDate,
