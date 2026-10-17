@@ -189,6 +189,86 @@ describe("ghost filter", () => {
   });
 });
 
+describe("culture-view labels", () => {
+  it("tags the swapped primary and does not name the note ghost after another culture", () => {
+    const dataset = relationDataset("master");
+    const origin = dataset.calendar.parse("3A 400");
+    const scale = createScale({
+      originDays: origin.ok ? origin.days - 2000 : 0,
+      pxPerDay: 0.2,
+      minPxPerDay: 1e-9,
+      maxPxPerDay: 50_000,
+    });
+    const scene = (items: typeof dataset.items, cultures: string[]) =>
+      layoutScene({
+        items,
+        lanes: buildLanes(items, ["[[Accounts]]"]),
+        calendar: dataset.calendar,
+        calendars: dataset.calendars,
+        settings: dataset.settings,
+        accounts: true,
+        cultures,
+        scale,
+        viewportWidth: 12000,
+        itemHeight: 22,
+        overscanPx: 1000,
+        minLabelPx: 48,
+        selection: [],
+      });
+
+    const shared = scene(
+      dataset.items.filter((item) => item.title === "Shared Event"),
+      ["[[South]]"]
+    );
+    const primary = shared.items.find((item) => !item.ghost);
+    const noteGhost = shared.items.find((item) => item.ghost && item.id.endsWith("#primary"));
+    const northGhost = shared.items.find((item) => item.ghost && item.accountIndex === 0);
+    expect(primary?.label).toBe("Shared Event");
+    expect(primary?.cultureTag).toBe("(South)");
+    expect(primary?.tooltip).toContain("by [[South]]");
+    expect(primary?.tooltip).toContain("recorded later");
+    expect(noteGhost?.label).toBe("[[North]]");
+    expect(northGhost?.label).toBe("[[North]]");
+    expect(northGhost?.id.endsWith("#0")).toBe(true);
+
+    const plain = notesFromMarkdown(
+      [
+        {
+          path: "samples/relations/events/Plain Event.md",
+          markdown: `---
+type: event
+calendar: reckoning
+start: "3A 420"
+lane: "[[Accounts]]"
+accounts:
+  - by: "[[East]]"
+    start: "3A 410"
+    claim: "east claim"
+  - by: "[[West]]"
+    start: "3A 430"
+    claim: "west claim"
+---
+# Plain Event
+`,
+        },
+      ],
+      dataset.calendars,
+      dataset.calendar.def.id
+    ).items;
+    const west = scene(plain, ["[[West]]"]);
+    const westPrimary = west.items.find((item) => !item.ghost);
+    const note = west.items.find((item) => item.id.endsWith("#primary"));
+    const east = west.items.find((item) => item.accountIndex === 0);
+    expect(westPrimary?.cultureTag).toBe("(West)");
+    expect(westPrimary?.label).toBe("Plain Event");
+    expect(westPrimary?.tooltip).toContain("west claim");
+    expect(note?.label).toBe("note date");
+    expect(note?.label).not.toBe("[[East]]");
+    expect(note?.label).not.toBe("[[West]]");
+    expect(east?.label).toBe("[[East]]");
+  });
+});
+
 describe("vault units text", () => {
   it("reads one unit per line and ignores blanks", () => {
     expect(parseUnitsText("")).toBeUndefined();

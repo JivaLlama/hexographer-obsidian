@@ -336,6 +336,15 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
           text.textContent = item.label;
           group.append(text);
         }
+        if (item.cultureTag && item.label) {
+          const tag = svgEl("text");
+          tag.classList.add("wt-culture-tag");
+          tag.setAttribute("x", round(item.labelX + measureLabel(item.label) + 4));
+          tag.setAttribute("y", round(item.y + item.height / 2));
+          tag.setAttribute("dominant-baseline", "middle");
+          tag.textContent = item.cultureTag;
+          group.append(tag);
+        }
         if (item.hint) {
           const hint = svgEl("text");
           hint.classList.add("wt-item-hint");

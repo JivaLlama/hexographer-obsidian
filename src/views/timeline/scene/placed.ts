@@ -170,6 +170,26 @@ export function cultureForItem(item: TimelineItem, filters: FilterState | undefi
   return cultures[0];
 }
 
+/** Small primary tag, `[[South]]` or `South` both become `(South)`. */
+export function cultureTagText(culture: string | undefined): string {
+  const raw = culture?.trim();
+  if (!raw) return "";
+  const wiki = /^\[\[([^\]|]+)(?:\|([^\]]+))?\]\]$/.exec(raw);
+  const name = (wiki ? wiki[2] || wiki[1] || "" : raw).trim();
+  return name ? `(${name})` : "";
+}
+
+/**
+ * Ghost label from one `barsForItem` bar.
+ * A note's own bar uses that note's `culture`, or "note date" when it has none.
+ * It does not borrow another account's `by`. An account ghost uses its own `by`.
+ */
+export function ghostBarLabel(bar: Bar): string {
+  const culture = bar.culture?.trim() ?? "";
+  if (bar.notePrimary || bar.accountIndex === undefined) return culture || "note date";
+  return culture || "note date";
+}
+
 export function relationText(kind: string, target: string, gap: string | undefined): string {
   const label = target.includes("[[") ? target.trim() : `[[${target.trim()}]]`;
   const trimmed = gap?.trim();

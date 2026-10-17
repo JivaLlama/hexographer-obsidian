@@ -21,6 +21,8 @@ import {
   barDateTooltip,
   boundsTooltip,
   cultureForItem,
+  cultureTagText,
+  ghostBarLabel,
   ghostSpan,
   prepareDated,
   writtenStart,
@@ -84,6 +86,8 @@ export interface ItemBox {
   featherTrail?: { x: number; width: number };
   /** Unresolved-anchor warning. The item is drawn when bounds exist. */
   warning?: string;
+  /** Account primary, for example `(South)`. Drawn smaller than the title. */
+  cultureTag?: string;
   /** Account or swapped-note bar. Not packed by `packLanes`. */
   ghost?: boolean;
   accountIndex?: number;
@@ -362,6 +366,8 @@ function layoutSceneAt(input: SceneLayoutInput, inset: number): SceneModel {
         });
         if (primary.culture) placed.by = primary.culture;
         if (primary.claim) placed.claim = primary.claim;
+        const tag = cultureTagText(primary.culture);
+        if (tag) placed.cultureTag = tag;
       }
       items.push(placed);
     }
@@ -477,7 +483,11 @@ function assignGhostRows(
 
   for (const entry of entries) {
     const row = rows.get(entry.item.id) ?? 0;
-    add(entry.item.laneId ?? "", row, pixelOccupancy(entry.span, entry.item.title, entry.item.displayHint, scale, itemHeight, measure));
+    const primaryText =
+      entry.bars.primary.accountIndex !== undefined
+        ? `${entry.item.title} ${cultureTagText(entry.bars.primary.culture)}`.trim()
+        : entry.item.title;
+    add(entry.item.laneId ?? "", row, pixelOccupancy(entry.span, primaryText, entry.item.displayHint, scale, itemHeight, measure));
   }
 
   for (const entry of entries) {
@@ -487,7 +497,7 @@ function assignGhostRows(
     for (const bar of entry.bars.ghosts) {
       const span = ghostSpan(entry.item, entry.note, bar);
       if (!span) continue;
-      const label = bar.culture?.trim() || entry.item.title;
+      const label = ghostBarLabel(bar);
       const pixels = pixelOccupancy(span, label, undefined, scale, itemHeight, measure);
       let row = base;
       while (overlaps(laneId, row, pixels)) row += 1;
@@ -532,7 +542,8 @@ function spanLabelReach(
 ): { from: number; to: number } | null {
   if (!(pxPerDay > 0)) return null;
   const span = entry.span;
-  const titlePx = measure(entry.item.title);
+  const tag = entry.bars.primary.accountIndex !== undefined ? cultureTagText(entry.bars.primary.culture) : "";
+  const titlePx = measure(entry.item.title) + (tag ? measure(tag) + 4 : 0);
   const hintPx = entry.item.displayHint ? measure(entry.item.displayHint) : 0;
   if (span.point) {
     const reachDays = (pointMarkPad(itemHeight) + Math.max(titlePx, hintPx) + LABEL_GAP) / pxPerDay;
@@ -799,26 +810,27 @@ function assignLabels(items: ItemBox[], measure: (title: string) => number): voi
       const item = list[index];
       const next = list[index + 1];
       const limit = next ? leadingEdge(next) - LABEL_GAP : Number.POSITIVE_INFINITY;
+      const tagPx = item.cultureTag ? measure(item.cultureTag) + 4 : 0;
       if (item.shape === "point") {
         const labelX = item.x + pointMarkPad(item.height);
         item.labelX = labelX;
-        item.label = ellipsizeToPx(item.title, limit - labelX, measure);
-        item.hint = fitHint(item.hint, limit - labelX, measure);
+        item.label = ellipsizeToPx(item.title, limit - labelX - tagPx, measure);
+        item.hint = fitHint(item.hint, limit - labelX - tagPx, measure);
         item.labelOutside = false;
         continue;
       }
-      const innerWidth = item.width - LABEL_TEXT_PAD * 2;
+      const innerWidth = item.width - LABEL_TEXT_PAD * 2 - tagPx;
       if (measure(item.title) <= innerWidth) {
         item.labelX = item.x + LABEL_TEXT_PAD;
         item.label = item.title;
-        item.hint = fitHint(item.hint, limit - item.labelX, measure);
+        item.hint = fitHint(item.hint, limit - item.labelX - tagPx, measure);
         item.labelOutside = false;
         continue;
       }
       const labelX = item.x + item.width + LABEL_TEXT_PAD;
       item.labelX = labelX;
-      item.label = ellipsizeToPx(item.title, limit - labelX, measure);
-      item.hint = fitHint(item.hint, limit - labelX, measure);
+      item.label = ellipsizeToPx(item.title, limit - labelX - tagPx, measure);
+      item.hint = fitHint(item.hint, limit - labelX - tagPx, measure);
       item.labelOutside = item.label.length > 0;
     }
   }
@@ -868,7 +880,7 @@ function placeGhost(
   selected: boolean,
   measure: (title: string) => number
 ): ItemBox | null {
-  const label = seat.bar.culture?.trim() || entry.item.title;
+  const label = ghostBarLabel(seat.bar);
   const occupancy = pixelOccupancy(seat.span, label, undefined, scale, height, measure);
   if (occupancy.to < left || occupancy.from > right) return null;
   const box = spanBox(entry.item, seat.span, scale, y, height, left, right, selected);
