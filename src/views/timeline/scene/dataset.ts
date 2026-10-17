@@ -32,12 +32,12 @@ export function readTimelineConfig(
   fallbackCalendarId: string
 ): { config: TimelineConfig; error?: string } {
   const trimmed = yaml.trim();
-  if (!trimmed) return { config: { source: {}, calendarId: fallbackCalendarId } };
+  if (!trimmed) return { config: { source: {}, displayCalendarId: fallbackCalendarId } };
   try {
     return { config: parseTimelineConfig(trimmed, fallbackCalendarId) };
   } catch (error) {
     return {
-      config: { source: {}, calendarId: fallbackCalendarId },
+      config: { source: {}, displayCalendarId: fallbackCalendarId },
       error: error instanceof Error ? error.message : String(error),
     };
   }
@@ -130,7 +130,7 @@ export function itemsFromNotes(
 export function stubDataset(calendars?: readonly CalendarEngine[]): TimelineDataset {
   const list = calendars && calendars.length > 0 ? [...calendars] : defaultCalendars();
   const config = parseTimelineConfig(STUB_CONFIG, "reckoning");
-  const calendar = list.find((engine) => engine.def.id === config.calendarId) ?? list[0];
+  const calendar = list.find((engine) => engine.def.id === config.displayCalendarId) ?? list[0];
   const engines = list.some((engine) => engine.def.id === calendar.def.id) ? list : [...list, calendar];
   return {
     items: itemsFromNotes(STUB_NOTES, engines, calendar.def.id),

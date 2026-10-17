@@ -18,13 +18,13 @@ export async function loadTimeline(app: App, configYaml: string): Promise<Timeli
   const calendars = await loadCalendars(app);
   const fallback = calendars.find((engine) => engine.def.id === "gregorian") ?? calendars[0];
   const { config, error } = readTimelineConfig(configYaml, fallback.def.id);
-  const calendar = calendars.find((engine) => engine.def.id === config.calendarId);
+  const calendar = calendars.find((engine) => engine.def.id === config.displayCalendarId);
   const queryNote = config.source.query ? "source.query is not evaluated yet." : undefined;
 
   if (!calendar) {
     return {
       ...stubDataset(calendars),
-      notice: joinNotice(error, queryNote, `Unknown calendar "${config.calendarId}". Showing sample dates.`),
+      notice: joinNotice(error, queryNote, `Unknown calendar "${config.displayCalendarId}". Showing sample dates.`),
     };
   }
 
@@ -91,7 +91,9 @@ async function readItems(
     const item = parseTimelineNote(text, {
       path: file.path,
       calendars,
-      defaultCalendarId: config.calendarId,
+      // No vault-default setting exists yet. A note that omits `calendar`
+      // is read in the block's display calendar.
+      defaultCalendarId: config.displayCalendarId,
       title: file.basename,
     });
     if (!item) continue;
