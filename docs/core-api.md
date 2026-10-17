@@ -14,6 +14,9 @@ The plugin entry does not import the core yet. The hex painter is unchanged.
 - `laneId` is the frontmatter string (`"[[House Vey]]"`), or `null` for eras and unlaned items.
 - `calendarId` is the calendar of this note's date strings. Frontmatter `calendar: reckoning` sets it. When the key is missing, parsing uses the vault default passed as `defaultCalendarId`. `source.calendarId` is the same id.
 - `culture` is an optional frontmatter string (`culture: "[[Tideborn]]"`). It is independent of `calendarId`: two cultures may share a calendar. Omit the key and the field is absent.
+- `certainty` is optional: `"locked" | "working" | "uncertain" | "open"` (`CERTAINTIES`). The frontmatter value is trimmed and compared case-insensitively. An unknown value leaves `certainty` unset and pushes a string onto `warnings`. It does not set `parseError`.
+- `displayHint` is an optional string passed through on read. A drag writeback (`planMove` / `applyPlanToNote` / `serializeTimelineNote`) never writes it. Other frontmatter keys are copied through, so the hint survives a move.
+- `warnings` lists non-fatal notes. `parseError` is still the fatal date failure.
 - `parseError` is set when a date fails, or when `calendar` names an engine that was not loaded. The item is still returned.
 - `links.other` is always `[]` in this phase. `places` and `people` come from frontmatter. Body wikilinks are not scanned.
 - `source.startRaw` / `source.endRaw` are the original strings.
@@ -23,6 +26,53 @@ The plugin entry does not import the core yet. The hex painter is unchanged.
 `FilterState.calendars` matches `item.calendarId`. `FilterState.cultures` matches `item.culture`. Both comparisons trim and ignore case. An item with no culture fails a non-empty culture list. Eras are included in both. A culture timeline sets both. A master timeline leaves them empty and shows every item. Text search also looks at the culture and the calendar id.
 
 `EditCommand` is `{ label, patches: [{ path, fields: [{ key, before, after }] }] }`. One drag is one command.
+
+## Order-only events
+
+NOTE-FORMAT-SPEC v0.1 says an event `start` is required. An approved addition: `type: event` with `order: <number>`, an `era` (wikilink or era id), and no `start`. These are not `TimelineItem`s, so `start` stays a number there.
+
+`parseTimelineNote` is unchanged for Cody's view: it still returns `TimelineItem | null`. An order-only note returns null from that function. `parseTimelineNoteResult` returns `TimelineNoteResult`:
+
+```ts
+{ kind: "dated"; item: TimelineItem } | { kind: "ordered"; item: OrderedItem }
+```
+
+`OrderedItem` is `{ id, title, order, eraRef, laneId, tags, certainty?, calendarId?, culture?, color?, displayHint?, links, warnings?, source: { path, eraRaw } }`. `calendarId` is set only when the note names a calendar. There is no date to apply the vault default to.
+
+```ts
+eraAnchors(eras, calendars?) → EraAnchor[]
+groupOrderedItems(items, anchors) → OrderedGroup[]
+BEFORE_RECKONING === "before reckoning"
+```
+
+`eraAnchors` matches a note path, its basename, its title, and, when `start` parses, that calendar era's id, abbreviation, and name. `era: "[[Third Age]]"`, `era: "[[eras/Third Age]]"`, and `era: 3A` can name the same era note. The first anchor in the list wins a shared alias.
+
+`groupOrderedItems` keeps the anchor order. Missing or unknown eras share one leading group whose `eraKey`, `label`, and `unresolved` flag are `BEFORE_RECKONING`. Inside a group, items sort by `order`, then title, then id. A full tie keeps input order.
+
+A number `order` together with a `start` stays a dated event. `order` is ignored for placement. A non-numeric `order` and no `start` stays a dated note with `parseError` "missing start" and a warning.
+
+## Scale
+
+`commitPan(scale, translatePx)` and `scale.commitPan(translatePx)` rebase `originDays`. A positive translate reveals earlier days: `originDays - translatePx / pxPerDay`. A zero translate returns the same scale.
+
+`zoomToFit(scale, extent, viewportPx, padding = 0)` and `scale.zoomToFit(extent, viewportPx, padding)` fit the world-day extent across the viewport, then clamp `pxPerDay` to the scale's limits. Padding is pixels per side, and it is capped at a quarter of the viewport. The extent is centered in whatever width remains after clamping.
+
+## Vault scan
+
+The shell still does file I/O. It passes `{ path, content }[]` and a `VaultSettings` (`{ defaultCalendarId? }`).
+
+```ts
+resolveDefaultCalendar(settings, calendarIds) → { calendarId, warning? }
+scanVault(files, settings?) → { items, ordered, eras, calendars, warnings }
+```
+
+`resolveDefaultCalendar` uses `settings.defaultCalendarId` when that id is loaded. An unknown id sets `warning` and is not used. Otherwise `gregorian` wins, then the first loaded id.
+
+`scanVault` always loads `GREGORIAN` first. `*.calendar.md` files are calendars. A second `gregorian` file, or any other duplicate id, is skipped with a warning. `items` is every dated note in file order, including eras. `eras` is that era subset. `ordered` is the order-only events. `warnings` collects calendar failures, duplicate ids, note `warnings`, and `parseError`s. A note that is not an event, span, or era is ignored.
+
+## Lane labels
+
+`packLanes(items, lanes, options?)` is unchanged when `options` is omitted. `options.labelExtent(item)` returns a world-day interval `{ from, to }` reserved for the label, or null. The packed interval is the union of `extentOf(item)` and that interval, so a point label can keep the next point off its row. The view converts pixels to days before calling.
 
 ## Moves
 
@@ -75,6 +125,7 @@ validateCalendar(def) // string[]; empty means usable
 GREGORIAN             // BCE/CE, Sunday-first weeks, nested leap rule
 RECKONING             // sample; see samples/calendars/reckoning.calendar.md
 HARBOR                // second sample; epochOffset 10000; samples/calendars/harbor.calendar.md
+formatYearsAgo(def, absoluteYear)  // "1500 ya"; throws without display.mode
 parseCalendarDocument(markdown)
 serializeCalendarDocument(def, prose?)
 ```
@@ -90,6 +141,16 @@ Precision patterns required on a definition: `era` (only if it has eras), `year`
 `ticks(range, pxPerDay, minLabelPx)` returns `{ major, minor }`. Week ticks are every `weekdays.length` days from local day 0. Intercalary days outside the week make `weekday()` return `null`.
 
 Leap cycles longer than 100,000 years are rejected. Use `kind: "list"` for irregular years. `hasYearZero: false` skips a labeled year 0 (displayed −1 is absolute 0). Gregorian does this. Reckoning does not.
+
+### Years-ago labels
+
+Optional calendar field, display only:
+
+```ts
+display: { mode: "before-present"; presentYear: number; suffix: string }
+```
+
+`presentYear` is an absolute year. Year Y is labeled `(presentYear - Y) suffix`, for example `1500 ya`. `{ya}` is a format token for `format(date, "{ya}")` and for an extra named pattern. It is not accepted as input: `parse("1500 ya")` and `parse("~1500ya")` fail. A required precision pattern (`year`, `day`, …) must not contain `{ya}`, so `planMove` writeback stays an absolute ascending year. Year, decade, century, and millennium ticks use the years-ago label when `display` is set. Finer ticks stay in the calendar's own patterns. Note strings are unchanged.
 
 Safe integer days only (`±2^53`). Minute resolution is reliable for day counts well under `2^53 / minutesPerDay`.
 
@@ -109,7 +170,9 @@ Classes: `wt-timeline`, `wt-axis`, `wt-tick`, `wt-tick--major`, `wt-tick--minor`
 
 Variables: `--wt-item-fill`, `--wt-item-stroke`, `--wt-item-height`, `--wt-item-radius`, `--wt-lane-bg`, `--wt-lane-alt-bg`, `--wt-lane-label`, `--wt-era-fill`, `--wt-era-opacity`, `--wt-tick-major`, `--wt-tick-minor`, `--wt-accent`, `--wt-selection`, `--wt-error-badge`.
 
-Data attributes: `data-type`, `data-tags` (space-separated), `data-lane`, `data-id`.
+Data attributes: `data-type`, `data-tags` (space-separated), `data-lane`, `data-id`, `data-certainty` (`WT_DATA.certainty`).
+
+Certainty variables: `--wt-certainty-locked`, `--wt-certainty-working`, `--wt-certainty-uncertain`, `--wt-certainty-open` (`WT_VAR.certaintyLocked` and the three beside it). Set `data-certainty` from `item.certainty`. The view owns the actual colors.
 
 ## Config
 
@@ -129,6 +192,13 @@ filters:
 ```
 
 `filters.calendar` and `filters.culture` are accepted as a single string and stored on `calendars` / `cultures`. `view.from` and `view.to` are strings in the display calendar.
+
+## Design only, not exported
+
+These names are proposals. Do not import them.
+
+- Relative dates: [design-relative-dates.md](design-relative-dates.md). `RelativeClause`, `TimeUnitDef`, `ResolvedBounds`, `ResolveInput`, `resolveDates`, `planRelativeMove`. `after` / `before` / `overlaps` / `gap`, plus `~4115` sharing the same min/max bounds. Not in NOTE-FORMAT-SPEC v0.1.
+- Accounts: [design-accounts.md](design-accounts.md). `Account`, `parseAccounts`, `FilterState.accounts` (a boolean toggle, not a list). Not implemented.
 
 ## Checks
 

@@ -1,4 +1,4 @@
-import type { CalendarDef, EraDef, LeapRule, MonthDef, TimeDef, WeekdayDef } from "./types";
+import type { BeforePresentDisplay, CalendarDef, EraDef, LeapRule, MonthDef, TimeDef, WeekdayDef } from "./types";
 import { validateCalendar } from "./validate";
 import { joinFrontmatter, splitFrontmatter } from "../yaml/frontmatter";
 import { parseYaml } from "../yaml/parse";
@@ -37,6 +37,7 @@ export function calendarFromUnknown(value: unknown): CalendarDef {
     def.intercalaryInWeek = requiredBool(raw.intercalaryInWeek, "intercalaryInWeek");
   }
   if (raw.time !== undefined) def.time = readTime(raw.time);
+  if (raw.display !== undefined) def.display = readDisplay(raw.display);
   const errors = validateCalendar(def);
   if (errors.length > 0) throw new Error(errors.join("\n"));
   return def;
@@ -78,6 +79,7 @@ function calendarToPlain(def: CalendarDef): Record<string, unknown> {
   };
   if (def.intercalaryInWeek !== undefined) plain.intercalaryInWeek = def.intercalaryInWeek;
   if (def.time) plain.time = def.time;
+  if (def.display) plain.display = def.display;
   return plain;
 }
 
@@ -162,6 +164,17 @@ function readTime(value: unknown): TimeDef {
   return {
     hoursPerDay: requiredInt(map.hoursPerDay, "time.hoursPerDay"),
     minutesPerHour: requiredInt(map.minutesPerHour, "time.minutesPerHour"),
+  };
+}
+
+function readDisplay(value: unknown): BeforePresentDisplay {
+  const map = asMap(value, "display");
+  const mode = requiredString(map.mode, "display.mode");
+  if (mode !== "before-present") throw new Error('display.mode must be "before-present"');
+  return {
+    mode: "before-present",
+    presentYear: requiredInt(map.presentYear, "display.presentYear"),
+    suffix: requiredString(map.suffix, "display.suffix").trim(),
   };
 }
 

@@ -1,5 +1,5 @@
 import type { CalendarDate, CalendarEngine } from "../calendar/types";
-import type { ItemKind, TimelineItem } from "../types";
+import { CERTAINTIES, type Certainty, type ItemKind, type OrderedItem, type TimelineItem, type TimelineNoteResult } from "../types";
 import { joinFrontmatter, splitFrontmatter } from "../yaml/frontmatter";
 import { parseYaml } from "../yaml/parse";
 import { stringifyYaml } from "../yaml/stringify";
@@ -25,10 +25,23 @@ export interface TimelineWriteback {
 const KINDS: readonly ItemKind[] = ["event", "span", "era"];
 
 /**
- * Pure note → item conversion. Returns null when the note is not an event, span, or era.
+ * Dated notes only. An order-only event returns null here; use `parseTimelineNoteResult`.
  * A date that fails to parse still returns an item, with `parseError` set.
  */
 export function parseTimelineNote(markdown: string, options: ParseTimelineNoteOptions): TimelineItem | null {
+  const result = parseTimelineNoteResult(markdown, options);
+  if (!result || result.kind !== "dated") return null;
+  return result.item;
+}
+
+/**
+ * Dated notes (`kind: "dated"`) and order-only events (`kind: "ordered"`).
+ * Returns null when the note is not an event, span, or era.
+ */
+export function parseTimelineNoteResult(
+  markdown: string,
+  options: ParseTimelineNoteOptions
+): TimelineNoteResult | null {
   const split = splitFrontmatter(markdown);
   if (!split) return null;
   let parsed: unknown;
@@ -42,7 +55,8 @@ export function parseTimelineNote(markdown: string, options: ParseTimelineNoteOp
   const kind = fields.type;
   if (typeof kind !== "string" || !KINDS.includes(kind as ItemKind)) return null;
 
-  const calendarId = typeof fields.calendar === "string" && fields.calendar ? fields.calendar : options.defaultCalendarId;
+  const wroteCalendar = typeof fields.calendar === "string" && fields.calendar.length > 0;
+  const calendarId = wroteCalendar ? (fields.calendar as string) : options.defaultCalendarId;
   const calendar = options.calendars.find((engine) => engine.def.id === calendarId);
   const culture = scalarString(fields.culture)?.trim();
   const startRaw = scalarString(fields.start) ?? "";
@@ -52,6 +66,45 @@ export function parseTimelineNote(markdown: string, options: ParseTimelineNoteOp
   const laneId = kind === "era" ? null : laneRaw && laneRaw.length > 0 ? laneRaw : null;
   const tags = readTags(fields.tags);
   const color = scalarString(fields.color);
+  const displayHint = scalarString(fields.displayHint)?.trim();
+  const certainty = readCertainty(fields.certainty);
+  const order = finiteNumber(fields.order);
+
+  if ((kind as ItemKind) === "event" && startRaw.length === 0 && order !== undefined) {
+    const warnings = [...certainty.warnings];
+    let orderedCalendar: string | undefined;
+    if (wroteCalendar) {
+      orderedCalendar = calendarId;
+      if (!calendar) warnings.push(`unknown calendar "${calendarId}"`);
+    }
+    const eraRef = scalarString(fields.era)?.trim() ?? "";
+    const item: OrderedItem = {
+      id: options.path,
+      title,
+      order,
+      eraRef,
+      laneId,
+      tags,
+      ...(certainty.certainty ? { certainty: certainty.certainty } : {}),
+      ...(orderedCalendar ? { calendarId: orderedCalendar } : {}),
+      ...(culture ? { culture } : {}),
+      ...(color ? { color } : {}),
+      ...(displayHint ? { displayHint } : {}),
+      links: {
+        places: readLinkList(fields.places),
+        people: readLinkList(fields.people),
+        other: [],
+      },
+      ...(warnings.length > 0 ? { warnings } : {}),
+      source: { path: options.path, eraRaw: eraRef },
+    };
+    return { kind: "ordered", item };
+  }
+
+  const warnings = [...certainty.warnings];
+  if ((kind as ItemKind) === "event" && startRaw.length === 0 && fields.order !== undefined && order === undefined) {
+    warnings.push("order must be a number");
+  }
   const base: TimelineItem = {
     id: options.path,
     kind: kind as ItemKind,
@@ -65,6 +118,8 @@ export function parseTimelineNote(markdown: string, options: ParseTimelineNoteOp
     tags,
     calendarId,
     ...(culture ? { culture } : {}),
+    ...(certainty.certainty ? { certainty: certainty.certainty } : {}),
+    ...(displayHint ? { displayHint } : {}),
     links: {
       places: readLinkList(fields.places),
       people: readLinkList(fields.people),
@@ -83,7 +138,8 @@ export function parseTimelineNote(markdown: string, options: ParseTimelineNoteOp
   if (!calendar) {
     problems.push(`unknown calendar "${calendarId}"`);
     base.parseError = problems.join("; ");
-    return base;
+    if (warnings.length > 0) base.warnings = warnings;
+    return { kind: "dated", item: base };
   }
 
   if (!startRaw) {
@@ -112,7 +168,8 @@ export function parseTimelineNote(markdown: string, options: ParseTimelineNoteOp
 
   if (base.end !== null && base.end < base.start) problems.push("end is before start");
   if (problems.length > 0) base.parseError = problems.join("; ");
-  return base;
+  if (warnings.length > 0) base.warnings = warnings;
+  return { kind: "dated", item: base };
 }
 
 /**
@@ -184,6 +241,18 @@ function readTags(value: unknown): string[] {
   return readLinkList(value)
     .map((tag) => tag.trim().replace(/^#/, ""))
     .filter((tag) => tag.length > 0);
+}
+
+function readCertainty(value: unknown): { certainty?: Certainty; warnings: string[] } {
+  if (value === undefined || value === null || value === "") return { warnings: [] };
+  if (typeof value !== "string") return { warnings: ["certainty must be a string"] };
+  const trimmed = value.trim().toLowerCase();
+  if (CERTAINTIES.includes(trimmed as Certainty)) return { certainty: trimmed as Certainty, warnings: [] };
+  return { warnings: [`unknown certainty "${value.trim()}"`] };
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function readLinkList(value: unknown): string[] {

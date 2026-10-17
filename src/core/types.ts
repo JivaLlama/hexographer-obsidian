@@ -4,6 +4,10 @@ export type { DayCount, Precision } from "./calendar/types";
 
 export type ItemKind = "event" | "span" | "era";
 
+/** How sure the author is. Frontmatter is trimmed and compared case-insensitively. */
+export const CERTAINTIES = ["locked", "working", "uncertain", "open"] as const;
+export type Certainty = (typeof CERTAINTIES)[number];
+
 /**
  * One timeline note. `start` / `end` are inclusive world-day instants (the start
  * of each written date). `extentTo` is the exclusive end of the occupied interval,
@@ -34,11 +38,45 @@ export interface TimelineItem {
   calendarId: string;
   /** Optional culture. Independent of `calendarId`: two cultures may share a calendar. */
   culture?: string;
+  /** Set only for a known certainty value. An unknown value is a warning, not a failure. */
+  certainty?: Certainty;
+  /**
+   * Author hint for the view (`displayHint`). Passed through on read.
+   * Writeback of a drag never writes this field.
+   */
+  displayHint?: string;
+  /** Non-fatal notes, such as an unknown `certainty` value. */
+  warnings?: string[];
   links: { places: string[]; people: string[]; other: string[] };
   source: { path: string; startRaw: string; endRaw?: string; calendarId: string };
   /** Set when a date failed to parse. The item is kept. */
   parseError?: string;
 }
+
+/**
+ * An event with `order` and no `start`. It is not a `TimelineItem`: `start` stays a number there.
+ * `eraRef` is the raw frontmatter value (a wikilink or an era id).
+ */
+export interface OrderedItem {
+  id: string;
+  title: string;
+  order: number;
+  eraRef: string;
+  laneId: string | null;
+  tags: string[];
+  certainty?: Certainty;
+  /** Set only when the note itself names a calendar. Ordered items have no dates to default. */
+  calendarId?: string;
+  culture?: string;
+  color?: string;
+  displayHint?: string;
+  links: { places: string[]; people: string[]; other: string[] };
+  warnings?: string[];
+  source: { path: string; eraRaw: string };
+}
+
+/** Full note parse. `parseTimelineNote` still returns only the dated arm, or null. */
+export type TimelineNoteResult = { kind: "dated"; item: TimelineItem } | { kind: "ordered"; item: OrderedItem };
 
 export interface Lane {
   id: string;

@@ -5,7 +5,7 @@ import type { CalendarDef, Precision } from "./types";
 const PRECISIONS: readonly Precision[] = ["era", "year", "month", "day", "hour", "minute"];
 
 const TOKEN =
-  /\{(EEEE|yyyy|MMMM|MMM|HH|MM|dd|mm|E|y|M|d|H|m)\}/g;
+  /\{(EEEE|yyyy|MMMM|MMM|HH|MM|dd|mm|ya|E|y|M|d|H|m)\}/g;
 
 /** Precision implied by the tokens in a pattern. */
 export function precisionOfPattern(pattern: string): Precision | null {
@@ -20,7 +20,7 @@ export function precisionOfPattern(pattern: string): Precision | null {
   if (tokens.has("H") || tokens.has("HH")) return "hour";
   if (tokens.has("d") || tokens.has("dd")) return "day";
   if (tokens.has("M") || tokens.has("MM") || tokens.has("MMM") || tokens.has("MMMM")) return "month";
-  if (tokens.has("y") || tokens.has("yyyy")) return "year";
+  if (tokens.has("y") || tokens.has("yyyy") || tokens.has("ya")) return "year";
   if (tokens.has("E") || tokens.has("EEEE")) return "era";
   return null;
 }
@@ -165,6 +165,9 @@ export function validateCalendar(def: CalendarDef): string[] {
       if (implied !== precision) {
         fail(`formats.${precision} must be a ${precision} pattern (inferred ${implied ?? "none"})`);
       }
+      if (pattern.includes("{ya}")) {
+        fail(`formats.${precision} is stored as an absolute date; {ya} is display-only`);
+      }
     }
     for (const [name, pattern] of Object.entries(def.formats)) {
       if (typeof pattern !== "string") fail(`formats.${name} must be a string`);
@@ -175,6 +178,23 @@ export function validateCalendar(def: CalendarDef): string[] {
     }
     if (typeof def.defaultFormat !== "string" || !(def.defaultFormat in def.formats)) {
       fail("defaultFormat must be a key in formats");
+    }
+    const usesYearsAgo = Object.values(def.formats).some(
+      (pattern) => typeof pattern === "string" && pattern.includes("{ya}")
+    );
+    if (usesYearsAgo && def.display?.mode !== "before-present") {
+      fail("{ya} requires display.mode before-present");
+    }
+  }
+
+  if (def.display !== undefined) {
+    const display = def.display;
+    if (!display || display.mode !== "before-present") fail('display.mode must be "before-present"');
+    else {
+      if (!Number.isSafeInteger(display.presentYear)) fail("display.presentYear must be a safe integer");
+      if (typeof display.suffix !== "string" || display.suffix.trim().length === 0) {
+        fail("display.suffix must be a non-empty string");
+      }
     }
   }
 
