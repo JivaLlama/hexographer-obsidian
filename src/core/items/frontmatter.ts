@@ -1,5 +1,8 @@
+import { parseAccounts } from "../accounts/parse";
 import type { CalendarDate, CalendarEngine } from "../calendar/types";
-import { CERTAINTIES, type Certainty, type ItemKind, type OrderedItem, type TimelineItem, type TimelineNoteResult } from "../types";
+import { splitApproximate } from "../relations/approximate";
+import { readRelations } from "../relations/read";
+import { CERTAINTIES, type Certainty, type EditCommand, type ItemKind, type OrderedItem, type TimelineItem, type TimelineNoteResult } from "../types";
 import { joinFrontmatter, splitFrontmatter } from "../yaml/frontmatter";
 import { parseYaml } from "../yaml/parse";
 import { stringifyYaml } from "../yaml/stringify";
@@ -20,6 +23,12 @@ export interface TimelineWriteback {
   lane?: string | null;
   tags?: string[];
   color?: string | null;
+  /** Sugar gap. `null` removes the key. */
+  gap?: string | null;
+  /** Replacement `relations` list in YAML shape. */
+  relations?: unknown;
+  /** Replacement `accounts` list in YAML shape. A primary drag omits this. */
+  accounts?: unknown;
 }
 
 const KINDS: readonly ItemKind[] = ["event", "span", "era"];
@@ -69,9 +78,17 @@ export function parseTimelineNoteResult(
   const displayHint = scalarString(fields.displayHint)?.trim();
   const certainty = readCertainty(fields.certainty);
   const order = finiteNumber(fields.order);
+  const relationRead = readRelations(fields);
+  const accountRead = parseAccounts(fields.accounts, calendarId, options.calendars);
+  const accountsRaw = fields.accounts !== undefined ? fields.accounts : undefined;
 
-  if ((kind as ItemKind) === "event" && startRaw.length === 0 && order !== undefined) {
-    const warnings = [...certainty.warnings];
+  if (
+    (kind as ItemKind) === "event" &&
+    startRaw.length === 0 &&
+    order !== undefined &&
+    relationRead.relations.length === 0
+  ) {
+    const warnings = [...certainty.warnings, ...accountRead.warnings];
     let orderedCalendar: string | undefined;
     if (wroteCalendar) {
       orderedCalendar = calendarId;
@@ -90,18 +107,23 @@ export function parseTimelineNoteResult(
       ...(culture ? { culture } : {}),
       ...(color ? { color } : {}),
       ...(displayHint ? { displayHint } : {}),
+      ...(accountRead.accounts.length > 0 ? { accounts: accountRead.accounts } : {}),
       links: {
         places: readLinkList(fields.places),
         people: readLinkList(fields.people),
         other: [],
       },
       ...(warnings.length > 0 ? { warnings } : {}),
-      source: { path: options.path, eraRaw: eraRef },
+      source: {
+        path: options.path,
+        eraRaw: eraRef,
+        ...(accountsRaw !== undefined ? { accountsRaw } : {}),
+      },
     };
     return { kind: "ordered", item };
   }
 
-  const warnings = [...certainty.warnings];
+  const warnings = [...certainty.warnings, ...relationRead.warnings, ...accountRead.warnings];
   if ((kind as ItemKind) === "event" && startRaw.length === 0 && fields.order !== undefined && order === undefined) {
     warnings.push("order must be a number");
   }
@@ -120,6 +142,8 @@ export function parseTimelineNoteResult(
     ...(culture ? { culture } : {}),
     ...(certainty.certainty ? { certainty: certainty.certainty } : {}),
     ...(displayHint ? { displayHint } : {}),
+    ...(relationRead.relations.length > 0 ? { relations: relationRead.relations } : {}),
+    ...(accountRead.accounts.length > 0 ? { accounts: accountRead.accounts } : {}),
     links: {
       places: readLinkList(fields.places),
       people: readLinkList(fields.people),
@@ -130,9 +154,19 @@ export function parseTimelineNoteResult(
       startRaw,
       ...(endRaw !== undefined ? { endRaw } : {}),
       calendarId,
+      ...(relationRead.gapRaw !== undefined ? { gapRaw: relationRead.gapRaw } : {}),
+      ...(relationRead.relationsRaw !== undefined ? { relationsRaw: relationRead.relationsRaw } : {}),
+      ...(relationRead.form ? { relationForm: relationRead.form, listRelationCount: relationRead.listCount } : {}),
+      ...(accountsRaw !== undefined ? { accountsRaw } : {}),
     },
   };
   if (color) base.color = color;
+
+  const startSplit = splitApproximate(startRaw);
+  const endSplit = endRaw !== undefined ? splitApproximate(endRaw) : undefined;
+  if (startSplit.approximate) base.startApproximate = true;
+  if (endSplit?.approximate) base.endApproximate = true;
+  const hasEndRelation = relationRead.relations.some((relation) => relation.edge === "end");
 
   const problems: string[] = [];
   if (!calendar) {
@@ -142,31 +176,36 @@ export function parseTimelineNoteResult(
     return { kind: "dated", item: base };
   }
 
-  if (!startRaw) {
-    problems.push("missing start");
+  let startParsed = false;
+  if (!startSplit.text) {
+    if (relationRead.relations.length === 0) problems.push("missing start");
   } else {
-    const start = calendar.parse(startRaw);
+    const start = calendar.parse(startSplit.text);
     if (!start.ok) problems.push(`start: ${start.error}`);
     else {
+      startParsed = true;
       base.start = start.days;
       base.startPrecision = start.date.precision;
       base.extentTo = safeEnd(calendar, start.date, start.days);
     }
   }
 
-  if (endRaw !== undefined) {
-    const end = calendar.parse(endRaw);
-    if (!end.ok) problems.push(`end: ${end.error}`);
+  if (endSplit) {
+    if (!endSplit.text) problems.push("end: could not parse \"\"");
     else {
-      base.end = end.days;
-      base.endPrecision = end.date.precision;
-      base.extentTo = safeEnd(calendar, end.date, end.days);
+      const end = calendar.parse(endSplit.text);
+      if (!end.ok) problems.push(`end: ${end.error}`);
+      else {
+        base.end = end.days;
+        base.endPrecision = end.date.precision;
+        base.extentTo = safeEnd(calendar, end.date, end.days);
+      }
     }
-  } else if (kind === "span" || kind === "era") {
+  } else if ((kind === "span" || kind === "era") && !hasEndRelation) {
     problems.push(`${kind} is missing end`);
   }
 
-  if (base.end !== null && base.end < base.start) problems.push("end is before start");
+  if (startParsed && base.end !== null && base.end < base.start) problems.push("end is before start");
   if (problems.length > 0) base.parseError = problems.join("; ");
   if (warnings.length > 0) base.warnings = warnings;
   return { kind: "dated", item: base };
@@ -194,8 +233,35 @@ export function serializeTimelineNote(markdown: string, update: TimelineWritebac
   if (update.tags !== undefined) fields.tags = update.tags;
   if (update.color === null) delete fields.color;
   else if (update.color !== undefined) fields.color = update.color;
+  if (update.gap === null) delete fields.gap;
+  else if (update.gap !== undefined) fields.gap = update.gap;
+  if (update.relations !== undefined) fields.relations = update.relations;
+  if (update.accounts !== undefined) fields.accounts = update.accounts;
   const body = split ? split.body : markdown;
   return joinFrontmatter(stringifyYaml(fields), body);
+}
+
+/**
+ * Apply an `EditCommand` to a note. Handles `start`, `end`, `gap`, `relations`, and `accounts`.
+ * A primary `planMove` command only carries `start` / `end`, so account rows stay as written.
+ */
+export function applyCommandToNote(markdown: string, command: EditCommand): string {
+  let next = markdown;
+  for (const patch of command.patches) {
+    const update: TimelineWriteback = {};
+    for (const field of patch.fields) {
+      if (field.key === "start" && (typeof field.after === "string" || typeof field.after === "number")) {
+        update.start = String(field.after);
+      } else if (field.key === "end") {
+        update.end = field.after === null || field.after === undefined ? null : String(field.after);
+      } else if (field.key === "gap") {
+        update.gap = field.after === null || field.after === undefined ? null : String(field.after);
+      } else if (field.key === "relations") update.relations = field.after;
+      else if (field.key === "accounts") update.accounts = field.after;
+    }
+    next = serializeTimelineNote(next, update);
+  }
+  return next;
 }
 
 /** The engine whose strings this note stores. Throws when that id is not loaded. */

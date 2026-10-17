@@ -1,5 +1,6 @@
 import { chronologicalEras } from "../calendar/eras";
 import type { CalendarEngine, DayCount, Precision } from "../calendar/types";
+import { withTilde } from "../relations/approximate";
 import type { EditCommand, FieldPatch, MoveMode, PlanMoveResult, TimelineItem } from "../types";
 import { finerPrecision } from "./precision";
 
@@ -60,20 +61,26 @@ export function planMove(
     }
   }
 
-  const startRaw = rawFor(calendar, start, startPrecision, item.source.startRaw, item.start, item.startPrecision, opts.fine);
+  const startRaw = withTilde(
+    rawFor(calendar, start, startPrecision, item.source.startRaw, item.start, item.startPrecision, opts.fine),
+    item.startApproximate
+  );
   let endRaw: string | undefined;
   if (mode === "move" && item.end === null) {
     end = null;
     endRaw = undefined;
   } else if (end !== null) {
-    endRaw = rawFor(
-      calendar,
-      end,
-      endPrecision,
-      item.source.endRaw,
-      item.end,
-      item.endPrecision,
-      opts.fine
+    endRaw = withTilde(
+      rawFor(
+        calendar,
+        end,
+        endPrecision,
+        item.source.endRaw,
+        item.end,
+        item.endPrecision,
+        opts.fine
+      ),
+      item.endApproximate
     );
   }
 

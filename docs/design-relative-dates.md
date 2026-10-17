@@ -1,8 +1,10 @@
-# Relative dates (design only)
+# Relative dates
 
-Not implemented. Nothing in this file is exported from `src/core`. NOTE-FORMAT-SPEC v0.1 stores absolute date strings. This proposal adds relations between notes without changing those strings' meaning.
+Implemented in `src/core`. Import `resolveDates`, `planRelativeMove`, `parseGap`, `formatGap`, and `normalizeUnits` from that module. NOTE-FORMAT-SPEC v0.1 stores absolute date strings. Relations sit beside those strings and do not change an absolute string's meaning.
 
 Storage stays in the note. The resolver does not write a cached day count. A later read runs the resolver again.
+
+Two corrections from the first draft are marked inline: an unresolved anchor is a warning, and the 10-year span sketch does not shift a pure relative interval.
 
 ## Note fields
 
@@ -57,15 +59,7 @@ interface DateFuzz {
 }
 ```
 
-Vault units would be added next to the exported `VaultSettings` (that type does not have `units` yet):
-
-```ts
-interface VaultSettings {
-  defaultCalendarId?: string;
-  /** Proposed. `gen: 40-60y` becomes `{ id: "gen", minYears: 40, maxYears: 60 }`. */
-  units?: TimeUnitDef[];
-}
-```
+Vault units live on `VaultSettings.units`. A record such as `{ gen: "40-60y" }` and a `TimeUnitDef[]` are both accepted. `50y` is a fixed unit (`minYears === maxYears`) and is not a snap unit.
 
 `40-60y` is a closed year range. `2 gen` means twice that range: `[80, 120]` years. A fixed term `10y` adds 10 to both ends. Unknown units are a parse error on that note. This round's `~1500ya` display token is unrelated and is still not an input date.
 
@@ -127,8 +121,10 @@ The mirror for `before A` with `1 gen` is `min = 1000 - 60 = 940`, `max = 1000 -
 
 `end` is null only for a point. A span has its own end interval. Two rules:
 
-- **Absolute duration.** The start is relative or approximate, and the end is an exact absolute date with no `~` and no relation of its own. The duration `D` is the world-day length from the start's nominal instant (the written absolute start, or the midpoint of a `~` year) to that written end. The end interval is the start interval shifted by `D`: `end.min = start.min + D`, `end.max = start.max + D`, `end.likely = start.likely + D`. The length stays put. The end is not pinned to the original world day. In the chain above, a span whose start is C and whose nominal length is 10 years has end `[1090, 1130]`, likely 1110.
-- **Independent end.** An approximate end (`end: "~1100"`) or a relation with `edge: end` resolves on its own, with the same interval rules as a start. It does not inherit the start's width. A pure relative start (no absolute start date) plus an exact `end` and no duration to measure is this case too: the end is the zero-width written instant.
+- **Absolute duration.** The start has a written absolute date (exact or `~`) and the end is an exact absolute date with no `~` and no relation of its own. The duration `D` is the world-day length from that written start's nominal instant (the exact instant, or the midpoint of a `~` year) to the written end. After the start interval is finalized — the written start intersected with any start relations — the end interval is that interval shifted by `D`: `end.min = start.min + D`, `end.max = start.max + D`, `end.likely = start.likely + D`. The length stays put. The end is not pinned to a zero-width world day. A `~` year inside a wider relation keeps the year's width, and the end keeps that same width.
+- **Independent end.** An approximate end (`end: "~1100"`) or a relation with `edge: end` resolves on its own, with the same interval rules as a start. It does not inherit the start's width. A pure relative start (no absolute start date) plus an exact `end` is this case too: there is no written nominal to measure `D` from, so the end is the zero-width written instant.
+
+The first draft said a span whose start is chain note C (width 40 years) and whose nominal length is 10 years would end at `[1090, 1130]`. That sketch does not occur. A pure relative start has no written nominal, so the exact end stays zero-width. A written `~` year is intersected with the relation and is the width `D` preserves, which is one year, not C's 40.
 
 After both edges exist, validate `end >= start`. The pair is possible when `end.max >= start.min`. Warn, and keep the bounds, when no such pair exists (`end.max < start.min`) or when the drawn points are already backwards (`end.likely < start.likely`). The warning names both ranges. Do not clamp one edge to the other.
 
@@ -159,9 +155,9 @@ Example. A is exact at 1000. `after A` with `1 gen` is `[1040, 1060]`. `before` 
 
 1. Parse every absolute `start` / `end`, including `~` years, into `ResolvedBounds`. These notes are resolved. They do not wait on anyone. A span whose end is an absolute duration is not finished in this step; its end is shifted after the start's relations are intersected.
 2. Build the graph. An edge runs from a note to each relation `target`. Matching is path, basename, and title, same as `eraAnchors`.
-3. Cycles are a parse error, not a warning. The error names the cycle in target order, for example `cycle: [[A]] → [[B]] → [[A]]`. Every note on the cycle stays unresolved. A note that only depends on a cycle member is also unresolved, with `unresolved anchor` pointing at that member.
+3. A cycle is an error, not a warning. The error names the cycle in title order, for example `cycle: [[A]] → [[B]] → [[A]]`. Every note on the cycle stays unresolved (`bounds` unset). A note that only depends on a cycle member is also unresolved, with a warning `unresolved anchor [[X]]` pointing at that member. It does not get a second cycle error.
 4. A note whose targets are all resolved is resolved in the next pass. Passes repeat so the chain A → B → C → D resolves in that order, compounding the intervals above.
-5. A target that names no note is `unresolved anchor [[X]]`. That note gets no bounds. Descendants that need it stay unresolved the same way. Do not invent a start and do not put the note in `before reckoning` (that group is only for order-only items).
+5. A target that names no note is a warning, `unresolved anchor [[X]]`, not an error. That note gets no bounds. Descendants that need it stay unresolved the same way. Do not invent a start and do not put the note in `before reckoning` (that group is only for order-only items). The first draft put this warning in `error` beside cycles. A dangling anchor is not a cycle, so it stays a warning.
 
 Order-only items (`OrderedItem`) are not inputs. They have no day count to anchor.
 
@@ -183,21 +179,26 @@ interface GapTerm {
   unit: string;
 }
 
-interface RelativeMove {
-  /** Grammar: terms joined by `+`. A negative year term is written `- 10y`. */
-  gap: string;
-  command: EditCommand; // patches `gap`, or `relations` when the list form is in the note
+interface RelativeMoveContext {
+  /** The note's calendar. Throws when its id is not `item.calendarId`. */
+  calendar: CalendarEngine;
+  units?: VaultSettings["units"];
+  /** Which relation to edit. Default 0. The sugar entry is last when both forms are present. */
+  relationIndex?: number;
+  /** Anchor likely world day. `daysInYear` is read in `calendar` at this instant. */
+  anchorDays: number;
 }
 
-function planRelativeMove(
-  relation: Relation,
-  deltaDays: number,
-  calendar: CalendarEngine,
-  units: readonly TimeUnitDef[]
-): RelativeMove;
+interface RelativeMoveResult {
+  gap: string;
+  relations: Relation[];
+  command: EditCommand;
+}
+
+function planRelativeMove(item: TimelineItem, deltaDays: number, ctx: RelativeMoveContext): RelativeMoveResult;
 ```
 
-`deltaDays` has the same sign as `planMove`: positive moves the item later. For `after` and `overlaps`, add that delta to the gap. For `before`, subtract it (moving later shortens the time before the anchor).
+`deltaDays` has the same sign as `planMove`: positive moves the item later. For `after` and `overlaps`, add that delta to the gap. For `before`, subtract it (moving later shortens the time before the anchor). `ctx.anchorDays` is the anchor's likely world day. The drag does not re-resolve the anchor.
 
 The gap is a sum of terms, for example `2 gen + 10y`. Parse `+` and a spaced `-` (`2 gen - 10y` is `2 gen` plus `-10y`).
 
@@ -224,29 +225,15 @@ The anchor note is not patched.
 Dragging an anchor uses the existing `planMove` and writes only that note's `start` / `end`. Dependents are not patched. Their gap strings stay put. The view runs `resolveDates` again, and the dependents' intervals move because the anchor's interval moved, uncertainty included. An absolute dependent that merely checked a relation does not move; its written date is still the source of truth, and the relation warning updates.
 
 ```ts
-interface ResolveInput {
-  notes: Array<{
-    id: string;
-    calendarId: string;
-    startRaw?: string;
-    endRaw?: string;
-    startApproximate?: boolean;
-    endApproximate?: boolean;
-    relations?: Relation[];
-  }>;
-  calendars: readonly CalendarEngine[];
-  units: readonly TimeUnitDef[];
-}
-
-interface ResolvedNote {
-  id: string;
-  bounds?: ResolvedBounds;
-  /** Cycle text, or `unresolved anchor …`. Absent when `bounds` is set. */
-  error?: string;
-  warnings?: string[];
-}
-
-function resolveDates(input: ResolveInput): ResolvedNote[];
+function resolveDates(
+  items: readonly TimelineItem[],
+  settings: VaultSettings | undefined,
+  calendars: readonly CalendarEngine[]
+): ResolvedNote[];
 ```
 
-`planRelativeMove` and `resolveDates` are the whole pure API. The shell applies `EditCommand` the same way it applies a dated drag. No Obsidian and no DOM.
+`settings.units` supplies ranged units. Each `TimelineItem` already carries `relations`, `source.startRaw` / `endRaw`, and the approximate flags. A separate `ResolveInput` is not used. `ResolvedNote.error` is a cycle or a gap/calendar failure (`unknown unit "age"`, `invalid gap "…"`, `unknown calendar "…"`). `warnings` holds `unresolved anchor [[X]]`, `relation does not meet the written date`, and `end [min, max] is before start [min, max]`.
+
+A note with relations and no `start` is still a `TimelineItem`. `parseTimelineNote` returns it. `item.start` is `0` and `source.startRaw` is `""`. That `0` is not a world day; draw `bounds`. `itemMatches` still uses `extentOf` for a range filter, so filter on resolved bounds when the note has no written start.
+
+`planRelativeMove` and `resolveDates` are the whole pure API. `applyCommandToNote` writes the command's `gap` or `relations` patch. The shell can apply `EditCommand` the same way it applies a dated drag. No Obsidian and no DOM.

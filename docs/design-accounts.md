@@ -1,6 +1,6 @@
-# Accounts (design only)
+# Accounts
 
-Not implemented. Nothing in this file is exported from `src/core`. One note is still one event. Other cultures record their own version of that event on the same note, and the view draws those versions as ghosts.
+Implemented in `src/core`. Import `parseAccounts`, `barsForItem`, and `planAccountMove`. One note is still one event. Other cultures record their own version of that event on the same note, and the view draws those versions as ghosts.
 
 ## Shape
 
@@ -47,15 +47,19 @@ interface Account {
    * Defaults to the note's `calendarId` when the row omits `calendar`.
    */
   calendarId: string;
+  /** Set only when the author wrote `calendar` on the row. */
+  declaredCalendar?: string;
+  /** Index in the authored list. A drag patches this row when invalid rows were dropped. */
+  sourceIndex: number;
   warnings?: string[];
 }
 ```
 
-`TimelineItem.accounts?: Account[]` and `OrderedItem.accounts?: Account[]` would be optional additions. A primary order-only note can still carry dated accounts, and the reverse.
+`TimelineItem.accounts` and `OrderedItem.accounts` are optional. A primary order-only note can still carry dated accounts, and the reverse. `parseTimelineNote` still returns null for an order-only note.
 
 ## Parsing and validation
 
-`parseAccounts(value, noteCalendarId, calendars)` returns `{ accounts: Account[]; warnings: string[] }`.
+`parseAccounts(value, noteCalendarId, calendars)` returns `{ accounts: Account[]; warnings: string[] }`. `parseTimelineNoteResult` attaches the kept rows and appends the warnings to the note. A bad account does not set `parseError` and does not hide the primary.
 
 Keep a row when it has `by` and either a `start` or an `order`. Drop a row, with a warning that names `by` or `accounts[i]`, when:
 
@@ -68,17 +72,15 @@ An unknown `certainty` drops only that field and warns, same as the note-level r
 
 Dates parse with the row's `calendar` key when it names a loaded calendar, otherwise the note's calendar. An unknown row calendar warns and falls back to the note calendar rather than dropping a readable date. Writeback stores the calendar key only if the author wrote one.
 
-`parseTimelineNoteResult` would attach `accounts` and append row warnings to the note's `warnings`. A bad account does not set `parseError` and does not hide the primary.
-
 ## Writeback
 
 A drag still changes one place.
 
-- Dragging the primary uses `planMove` and patches `start` / `end` only. Account rows are copied through untouched, including their original strings.
-- Dragging a ghost patches that row's `start` / `end` (or `order` / `gap` once relative dates exist) inside the `accounts` array. The primary is not patched. The command's field key is `accounts` and the before/after values are the whole array, so undo replaces the list in one step. Precision of that row is kept the same way `planMove` keeps a note's precision.
+- Dragging the primary uses `planMove` and patches `start` / `end` only. Account rows are copied through untouched, including their original strings. `applyPlanToNote` does not rewrite `accounts`.
+- Dragging a ghost uses `planAccountMove(item, accountIndex, deltaDays, mode, { fine, calendar })`. It patches that row's `start` / `end` inside the `accounts` array. The primary is not patched. The command's field key is `accounts` and the before/after values are the whole array, so undo replaces the list in one step. Precision of that row follows `planMove`. Pass the row's calendar; a different id throws.
 - `displayHint`, `claim`, `by`, and `certainty` are never written by a drag.
 
-`serializeTimelineNote` would grow an optional `accounts` replace, used only by the ghost drag. A primary `applyPlanToNote` must not rewrite the list.
+`serializeTimelineNote` accepts an optional `accounts` replace, used only by the ghost drag. `applyCommandToNote` writes that patch.
 
 ## Filter
 
@@ -95,14 +97,17 @@ Ghosts are drawn on the primary's row: a dashed outline, with `claim` in the too
 
 ## Culture timelines
 
-Recommendation: on a culture timeline for X, an account `by` X is the bar that timeline treats as primary, and the note's own start is the ghost. The master timeline does the opposite: the note's start is primary, and every account is a ghost. Storage does not change in either view. The culture filter still decides which notes appear: a note appears on X's timeline when `item.culture` is X **or** some account `by` is X. A note with neither does not appear.
+On a culture timeline for X, `barsForItem(item, { culture: X, accounts })` treats the first account `by` X as the primary bar, and the note's own start as a ghost tagged with `item.culture`. The master timeline (`culture` omitted) does the opposite: the note's start is primary, and accounts are ghosts. Storage does not change in either view.
 
-That matches "whose history this is". X's timeline answers what X says happened. The master answers the vault's chosen primary, with other claims beside it when `filters.accounts` is `true` or a list that includes them. A list still uses the culture swap: on X's timeline the swapped bar is the one X wrote, and the list only chooses which other ghosts are drawn.
+A note appears on X's timeline when `item.culture` is X **or** some account `by` is X. `itemMatches` implements that. `FilterState.accounts` does not remove notes. A note with neither culture nor a matching account does not appear.
 
-Alternatives, if that swap is too surprising:
+`false` or omitted draws the primary only. After a swap, the note's own bar is a ghost, so it stays hidden until `accounts` is `true` or a list that matches `item.culture`. `true` draws every other ghost. A list matches `by` trimmed and case-insensitive, and it does not strip `[[ ]]`.
 
-- **Ghosts only.** X's timeline still draws the note's start as the only bar. An account by X is an extra ghost even there. Simplest code. X's claim is easy to miss, because it looks like a decoration on someone else's date.
-- **Accounts never add notes.** X's timeline only includes notes whose `culture` is X. An account by X on a Vey note shows on the master, and on X's timeline only when that note's culture is also X. Fewer surprises, and Tideborn's version of a Vey event never appears on the Tideborn timeline.
-- **Replace in storage.** Dragging on X's timeline writes the note's `start` and demotes the old start into an account. Rejected: writeback would change the primary just because the view was filtered, and two cultures would fight over the same field.
+```ts
+barsForItem(item, { culture?: string, accounts?: boolean | string[] })
+  → { id, primary: Bar, ghosts: Bar[] }
+```
 
-The recommendation needs no new write path. The view picks which `Account` or primary `start` to pass to the existing scale and pack functions. A drag on X's timeline patches the matching account row, not the primary, unless X is the note's own `culture` and the bar is the primary.
+`Bar` carries `role` (`"primary"` | `"ghost"`), world-day `start` / `end` or `order` / `eraRef`, `culture`, `claim`, `certainty`, and `accountIndex` when the bar is an account row. The swapped-out note bar sets `notePrimary`. Ghosts are not `TimelineItem`s and are not passed to `packLanes`. Collision rows stay the view's job.
+
+That matches "whose history this is". X's timeline answers what X says happened. The master answers the vault's chosen primary, with other claims beside it when `filters.accounts` is `true` or a list that includes them. A drag on X's timeline calls `planAccountMove` for the matching account row, not `planMove`, unless the bar is the note's own primary.

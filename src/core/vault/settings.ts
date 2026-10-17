@@ -1,9 +1,16 @@
+import type { TimeUnitDef } from "../types";
+
 /**
  * Plugin settings the shell passes in. The core does not read Obsidian's data store.
  * `defaultCalendarId` is the calendar a note uses when it omits `calendar`.
  */
 export interface VaultSettings {
   defaultCalendarId?: string;
+  /**
+   * Ranged units for `gap`. Either `{ gen: "40-60y" }` or a list of `TimeUnitDef`.
+   * `y`, `mo`, and `d` are built in and are not listed here.
+   */
+  units?: readonly TimeUnitDef[] | Readonly<Record<string, string>>;
 }
 
 export interface ResolvedCalendar {

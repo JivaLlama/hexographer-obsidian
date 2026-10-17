@@ -8,6 +8,83 @@ export type ItemKind = "event" | "span" | "era";
 export const CERTAINTIES = ["locked", "working", "uncertain", "open"] as const;
 export type Certainty = (typeof CERTAINTIES)[number];
 
+/** Inclusive world-day range. `likely` is the instant the view draws. */
+export interface Interval {
+  likely: number;
+  /** Inclusive lower bound. */
+  min: number;
+  /** Inclusive upper bound. Equal to `min` when the instant is exact. */
+  max: number;
+}
+
+/** Resolved placement of one note. `end` is null for a point. */
+export interface ResolvedBounds {
+  start: Interval;
+  end: Interval | null;
+}
+
+/** A vault unit such as `gen: 40-60y`. `y`, `mo`, and `d` are built into the gap grammar. */
+export interface TimeUnitDef {
+  /** Unit id as written in `gap`, for example `gen`. */
+  id: string;
+  /** Inclusive span of one unit, in calendar years of the note being placed. */
+  minYears: number;
+  maxYears: number;
+}
+
+export type RelationKind = "after" | "before" | "overlaps";
+
+/** One constraint on a note. Sugar `after` / `before` / `overlaps` becomes one of these. */
+export interface Relation {
+  kind: RelationKind;
+  /** Note path, title, or wikilink. Compared the same way an era ref is. */
+  target: string;
+  /** Original gap string. Absent means a zero gap. */
+  gap?: string;
+  /** Which edge of this note the relation constrains. Default `start`. */
+  edge?: "start" | "end";
+  /** Index in the authored `relations` list. Absent on a sugar relation. */
+  sourceIndex?: number;
+}
+
+/**
+ * One other culture's version of a note.
+ * A row is either dated (`start`) or ordered (`order`), never both.
+ */
+export interface Account {
+  /** Culture wikilink or plain label. Brackets are part of the match. */
+  by: string;
+  startRaw?: string;
+  endRaw?: string;
+  start?: number;
+  end?: number | null;
+  startPrecision?: Precision;
+  endPrecision?: Precision | null;
+  order?: number;
+  eraRef?: string;
+  claim?: string;
+  certainty?: Certainty;
+  /**
+   * Calendar used to parse this row.
+   * The note's calendar when the row omits `calendar`, or when that name is not loaded.
+   */
+  calendarId: string;
+  /** Set only when the author wrote `calendar` on the row. Writeback copies it back. */
+  declaredCalendar?: string;
+  /** Index of this row in the authored `accounts` list. */
+  sourceIndex: number;
+  warnings?: string[];
+}
+
+/** One note after `resolveDates`. A cycle sets `error` and leaves `bounds` unset. */
+export interface ResolvedNote {
+  id: string;
+  bounds?: ResolvedBounds;
+  /** Cycle text, or a gap/calendar failure. Unresolved anchors are warnings. */
+  error?: string;
+  warnings?: string[];
+}
+
 /**
  * One timeline note. `start` / `end` are inclusive world-day instants (the start
  * of each written date). `extentTo` is the exclusive end of the occupied interval,
@@ -45,10 +122,36 @@ export interface TimelineItem {
    * Writeback of a drag never writes this field.
    */
   displayHint?: string;
+  /** Leading `~` on `start`. Bounds come from `resolveDates`. `source.startRaw` keeps the tilde. */
+  startApproximate?: boolean;
+  /** Leading `~` on `end`. An approximate end does not inherit the start's width. */
+  endApproximate?: boolean;
+  /**
+   * `relations`, with a sugar `after` / `before` / `overlaps` entry appended after the list.
+   * A note with relations and no `start` is still dated. `start` is then 0 and is not a world
+   * day; draw `resolveDates` bounds. `source.startRaw` is empty.
+   */
+  relations?: Relation[];
+  /** Other cultures' versions of this note. A primary drag does not rewrite them. */
+  accounts?: Account[];
   /** Non-fatal notes, such as an unknown `certainty` value. */
   warnings?: string[];
   links: { places: string[]; people: string[]; other: string[] };
-  source: { path: string; startRaw: string; endRaw?: string; calendarId: string };
+  source: {
+    path: string;
+    startRaw: string;
+    endRaw?: string;
+    calendarId: string;
+    /** Authored sugar `gap`, when that key is present. */
+    gapRaw?: string;
+    /** Authored `relations` list, before a sugar entry is appended. */
+    relationsRaw?: unknown;
+    relationForm?: "sugar" | "list" | "mixed";
+    /** How many list entries precede the sugar relation. */
+    listRelationCount?: number;
+    /** Authored `accounts` value, so a ghost drag can patch one row. */
+    accountsRaw?: unknown;
+  };
   /** Set when a date failed to parse. The item is kept. */
   parseError?: string;
 }
@@ -70,9 +173,11 @@ export interface OrderedItem {
   culture?: string;
   color?: string;
   displayHint?: string;
+  /** Other cultures' versions. An order-only note can still carry dated accounts. */
+  accounts?: Account[];
   links: { places: string[]; people: string[]; other: string[] };
   warnings?: string[];
-  source: { path: string; eraRaw: string };
+  source: { path: string; eraRaw: string; accountsRaw?: unknown };
 }
 
 /** Full note parse. `parseTimelineNote` still returns only the dated arm, or null. */
@@ -115,6 +220,12 @@ export interface FilterState {
   text?: string;
   /** Half-open world-day window `[from, to)`. */
   range?: { from: DayCount; to: DayCount };
+  /**
+   * Which account ghosts to draw. This does not remove items.
+   * `true` draws every ghost. `false` or omitted draws none.
+   * A list draws ghosts whose `by` matches, trimmed and case-insensitive, brackets included.
+   */
+  accounts?: boolean | string[];
 }
 
 export interface FieldPatch {
