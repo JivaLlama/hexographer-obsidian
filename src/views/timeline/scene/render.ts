@@ -75,7 +75,9 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
   ghost.classList.add(WT_CLASS.ghost);
   pan.append(hitLayer, eras, lanes, items, ghost);
   const labelProbe = svgEl("text");
-  labelProbe.setAttribute("visibility", "hidden");
+  labelProbe.setAttribute("opacity", "0");
+  labelProbe.setAttribute("pointer-events", "none");
+  labelProbe.setAttribute("aria-hidden", "true");
   labelProbe.textContent = "Mg";
   scene.append(pan, labelProbe);
 
@@ -313,15 +315,21 @@ function fitLabel(title: string, width: number): string {
   return `${title.slice(0, max - 1)}…`;
 }
 
+/** Measure with the scene's own text element so packing matches the drawn font. */
 function createLabelMeasurer(probe: SVGTextElement): (title: string) => number {
-  const canvas = document.createElement("canvas");
-  const context = canvas.getContext("2d");
+  const cache = new Map<string, number>();
   return (title: string) => {
-    if (!context) return estimateLabelPx(title);
-    const font = getComputedStyle(probe).font;
-    if (!font) return estimateLabelPx(title);
-    context.font = font;
-    const width = context.measureText(title).width;
-    return Number.isFinite(width) && width > 0 ? width : estimateLabelPx(title);
+    const cached = cache.get(title);
+    if (cached !== undefined) return cached;
+    probe.textContent = title.length > 0 ? title : " ";
+    let width = 0;
+    try {
+      width = probe.getBBox().width;
+    } catch {
+      width = 0;
+    }
+    if (!(width > 0)) return estimateLabelPx(title);
+    cache.set(title, width);
+    return width;
   };
 }
