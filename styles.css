@@ -462,6 +462,10 @@
   cursor: pointer;
 }
 
+.wt-timeline .wt-item text {
+  pointer-events: auto;
+}
+
 .wt-item rect:not(.wt-bracket) {
   fill: var(--wt-item-fill);
   stroke: var(--wt-item-stroke);

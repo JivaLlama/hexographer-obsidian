@@ -4,7 +4,13 @@ import { describe, expect, it } from "vitest";
 import { createCalendar, createScale, GREGORIAN, parseCalendarDocument, RECKONING } from "../src/core";
 import { layoutTicks } from "../src/views/timeline/scene/axis";
 import { buildLanes, cameraForDataset, itemsFromNotes, stubDataset, visibleRange } from "../src/views/timeline/scene/dataset";
-import { layoutScene } from "../src/views/timeline/scene/layout";
+import {
+  ellipsizeToPx,
+  estimateLabelPx,
+  laneBlockHeight,
+  layoutScene,
+  pointRadius,
+} from "../src/views/timeline/scene/layout";
 import { commitPan, dayUnderPixel, fitRange, localX, zoomAround } from "../src/views/timeline/scene/rebase";
 
 describe("scale re-base", () => {
@@ -105,7 +111,6 @@ describe("axis and virtualization", () => {
       calendar: dataset.calendar,
       scale,
       viewportWidth: 720,
-      laneViewportHeight: 280,
       itemHeight: 22,
       overscanPx: 40,
       minLabelPx: 64,
@@ -139,7 +144,6 @@ describe("axis and virtualization", () => {
       calendar: dataset.calendar,
       scale,
       viewportWidth: 800,
-      laneViewportHeight: 240,
       itemHeight: 22,
       overscanPx: 40,
       minLabelPx: 64,
@@ -149,6 +153,122 @@ describe("axis and virtualization", () => {
     expect(box?.shape).toBe("point");
     expect(box?.bracket).not.toBeNull();
     expect(box?.bracket?.width).toBeGreaterThan(12);
+  });
+
+  it("stacks point labels that would overlap and sizes lanes to their rows", () => {
+    const camera = cameraForDataset(dataset, 900);
+    const scale = createScale({
+      originDays: camera.originDays,
+      pxPerDay: camera.pxPerDay,
+      minPxPerDay: 1e-9,
+      maxPxPerDay: 100_000,
+    });
+    const model = layoutScene({
+      items: dataset.items,
+      lanes: buildLanes(dataset.items, dataset.config.lanes?.order),
+      calendar: dataset.calendar,
+      scale,
+      viewportWidth: 900,
+      itemHeight: 22,
+      overscanPx: 40,
+      minLabelPx: 64,
+      selection: [],
+    });
+    const founding = model.items.find((item) => item.title === "Founding of Port Haven");
+    const coronation = model.items.find((item) => item.title === "Coronation of Aldric");
+    expect(founding?.label).toBe("Founding of Port Haven");
+    expect(coronation?.label).toBe("Coronation of Aldric");
+    expect(founding?.y).not.toBe(coronation?.y);
+
+    const byRow = new Map<string, typeof model.items>();
+    for (const item of model.items) {
+      const key = `${item.laneId}:${item.y}`;
+      const list = byRow.get(key);
+      if (list) list.push(item);
+      else byRow.set(key, [item]);
+    }
+    for (const row of byRow.values()) {
+      const ordered = [...row].sort((a, b) => a.x - b.x);
+      for (let index = 0; index < ordered.length - 1; index++) {
+        const item = ordered[index];
+        const next = ordered[index + 1];
+        if (!item?.label || !next) continue;
+        const edge = next.shape === "point" ? next.x - pointRadius(next.height) : next.x;
+        expect(item.labelX + estimateLabelPx(item.label)).toBeLessThanOrEqual(edge - 8 + 0.01);
+      }
+    }
+
+    const climate = model.lanes.find((lane) => lane.label === "Climate");
+    const treaties = model.lanes.find((lane) => lane.label === "Treaties");
+    const house = model.lanes.find((lane) => lane.label === "House Vey");
+    expect(climate?.height).toBe(laneBlockHeight(1, 22));
+    expect(treaties?.height).toBe(laneBlockHeight(1, 22));
+    const houseRows = new Set(model.items.filter((item) => item.laneId === house?.id).map((item) => item.y));
+    expect(houseRows.size).toBeGreaterThan(1);
+    expect(house?.height).toBe(laneBlockHeight(houseRows.size, 22));
+    expect(model.contentHeight).toBe(model.lanes.reduce((sum, lane) => sum + lane.height, 0));
+    expect(model.contentHeight).toBeLessThan(280);
+
+    const siege = model.items.find((item) => item.title === "Siege of Port Haven");
+    expect(siege?.color).toBe("#c0392b");
+    expect(siege?.parseError).toBeUndefined();
+    expect(siege?.shape).toBe("bar");
+    expect(siege?.tooltip).toBe("Siege of Port Haven");
+    expect(siege?.labelOutside).toBe(true);
+    expect(siege?.label).toBe("Siege of Port Haven");
+  });
+
+  it("truncates a label that still collides and keeps the full title on the tooltip", () => {
+    expect(ellipsizeToPx("Coronation of Aldric", 1000, estimateLabelPx)).toBe("Coronation of Aldric");
+    const truncated = ellipsizeToPx("Coronation of Aldric", estimateLabelPx("Coronat…"), estimateLabelPx);
+    expect(truncated.endsWith("…")).toBe(true);
+    expect(estimateLabelPx(truncated)).toBeLessThanOrEqual(estimateLabelPx("Coronat…"));
+    expect(ellipsizeToPx("Coronation of Aldric", 2, estimateLabelPx)).toBe("");
+
+    const siege = dataset.items.find((item) => item.title === "Siege of Port Haven");
+    const treaty = dataset.items.find((item) => item.title === "Treaty of Amber");
+    expect(siege).toBeDefined();
+    expect(treaty).toBeDefined();
+    if (!siege || !treaty) return;
+    const barItem = { ...siege, end: siege.start, extentTo: siege.start + 1 };
+    const neighbor = {
+      ...treaty,
+      id: "samples/timeline/events/Neighbor.md",
+      laneId: siege.laneId,
+      start: siege.start + 4,
+      extentTo: siege.start + 5,
+    };
+    const broken = {
+      ...treaty,
+      id: "samples/timeline/events/Broken Treaty.md",
+      start: siege.start,
+      extentTo: siege.start + 1,
+      parseError: "Unknown month",
+    };
+    const scale = createScale({
+      originDays: siege.start - 5,
+      pxPerDay: 3,
+      minPxPerDay: 1e-8,
+      maxPxPerDay: 50_000,
+    });
+    const model = layoutScene({
+      items: [barItem, neighbor, broken],
+      lanes: buildLanes([barItem, neighbor, broken], ["[[House Vey]]", "[[Treaties]]"]),
+      calendar: dataset.calendar,
+      scale,
+      viewportWidth: 900,
+      itemHeight: 22,
+      overscanPx: 40,
+      minLabelPx: 64,
+      selection: [],
+    });
+    const bar = model.items.find((item) => item.id === barItem.id);
+    expect(bar?.tooltip).toBe("Siege of Port Haven");
+    expect(bar?.label.endsWith("…") || bar?.label === "").toBe(true);
+    expect(bar?.label).not.toBe(siege.title);
+    const error = model.items.find((item) => item.id === broken.id);
+    expect(error?.tooltip).toBe("Treaty of Amber — Unknown month");
+    expect(error?.parseError).toBe("Unknown month");
   });
 
   it("ignores a long era when fitting items that have no explicit view", () => {

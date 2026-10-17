@@ -1,4 +1,4 @@
-import type { SceneModel } from "./layout";
+import { estimateLabelPx, pointRadius, type SceneModel } from "./layout";
 import { WT_CLASS, WT_DATA, WT_VAR, classes } from "../theme/classes";
 import { createChrome } from "../overlay/chrome";
 
@@ -21,8 +21,8 @@ export interface TimelineView {
   setTranslate(x: number): void;
   sceneWidth(): number;
   scenePoint(clientX: number, clientY: number): { x: number; y: number };
-  laneViewportHeight(): number;
   itemHeight(): number;
+  labelWidth(title: string): number;
   scrollLanesBy(dy: number): void;
   laneScroll(): number;
   render(model: SceneModel): void;
@@ -74,7 +74,10 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
   const ghost = svgEl("g");
   ghost.classList.add(WT_CLASS.ghost);
   pan.append(hitLayer, eras, lanes, items, ghost);
-  scene.append(pan);
+  const labelProbe = svgEl("text");
+  labelProbe.setAttribute("visibility", "hidden");
+  labelProbe.textContent = "Mg";
+  scene.append(pan, labelProbe);
 
   sceneWrap.append(scene);
   body.append(laneCol, sceneWrap);
@@ -83,6 +86,7 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
   container.replaceChildren(root);
 
   let translateX = 0;
+  const measureLabel = createLabelMeasurer(labelProbe);
 
   const view: TimelineView = {
     root,
@@ -112,14 +116,14 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
       const rect = scene.getBoundingClientRect();
       return { x: clientX - rect.left, y: clientY - rect.top };
     },
-    laneViewportHeight() {
-      return body.clientHeight;
-    },
     itemHeight() {
       const raw = getComputedStyle(root).getPropertyValue(WT_VAR.itemHeight).trim();
       const parsed = Number.parseFloat(raw);
       if (Number.isFinite(parsed) && parsed > 0) return parsed;
       return options.mobile ? 32 : 22;
+    },
+    labelWidth(title) {
+      return measureLabel(title);
     },
     scrollLanesBy(dy) {
       body.scrollTop += dy;
@@ -211,6 +215,9 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
         group.setAttribute(WT_DATA.lane, item.laneId);
         group.setAttribute("aria-label", item.title);
         if (item.color) group.style.setProperty(WT_VAR.itemFill, item.color);
+        const tip = svgEl("title");
+        tip.textContent = item.tooltip;
+        group.append(tip);
 
         if (item.bracket) {
           const bracket = svgEl("rect");
@@ -224,7 +231,7 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
         }
 
         if (item.shape === "point") {
-          const radius = Math.max(5, Math.min(8, item.height * 0.32));
+          const radius = pointRadius(item.height);
           const cy = item.y + item.height / 2;
           const diamond = svgEl("polygon");
           diamond.setAttribute(
@@ -232,12 +239,6 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
             `${round(item.x)},${round(cy - radius)} ${round(item.x + radius)},${round(cy)} ${round(item.x)},${round(cy + radius)} ${round(item.x - radius)},${round(cy)}`
           );
           group.append(diamond);
-          const text = svgEl("text");
-          text.setAttribute("x", round(item.x + radius + 4));
-          text.setAttribute("y", round(cy));
-          text.setAttribute("dominant-baseline", "middle");
-          text.textContent = item.title.length > 32 ? `${item.title.slice(0, 31)}…` : item.title;
-          group.append(text);
         } else {
           const rect = svgEl("rect");
           rect.setAttribute("x", round(item.x));
@@ -246,15 +247,15 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
           rect.setAttribute("height", round(item.height));
           rect.setAttribute("rx", "4");
           group.append(rect);
-          const label = fitLabel(item.title, item.width);
-          if (label) {
-            const text = svgEl("text");
-            text.setAttribute("x", round(item.x + 6));
-            text.setAttribute("y", round(item.y + item.height / 2));
-            text.setAttribute("dominant-baseline", "middle");
-            text.textContent = label;
-            group.append(text);
-          }
+        }
+
+        if (item.label) {
+          const text = svgEl("text");
+          text.setAttribute("x", round(item.labelX));
+          text.setAttribute("y", round(item.y + item.height / 2));
+          text.setAttribute("dominant-baseline", "middle");
+          text.textContent = item.label;
+          group.append(text);
         }
 
         if (item.parseError) {
@@ -264,7 +265,7 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
           badge.setAttribute("cy", round(item.y + 4));
           badge.setAttribute("r", "4");
           const title = svgEl("title");
-          title.textContent = item.parseError;
+          title.textContent = item.tooltip;
           badge.append(title);
           group.append(badge);
         }
@@ -310,4 +311,17 @@ function fitLabel(title: string, width: number): string {
   if (max < 2) return "";
   if (title.length <= max) return title;
   return `${title.slice(0, max - 1)}…`;
+}
+
+function createLabelMeasurer(probe: SVGTextElement): (title: string) => number {
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  return (title: string) => {
+    if (!context) return estimateLabelPx(title);
+    const font = getComputedStyle(probe).font;
+    if (!font) return estimateLabelPx(title);
+    context.font = font;
+    const width = context.measureText(title).width;
+    return Number.isFinite(width) && width > 0 ? width : estimateLabelPx(title);
+  };
 }
