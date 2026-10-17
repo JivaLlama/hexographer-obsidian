@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   applyPlanToNote,
+  calendarForItem,
   createCalendar,
   createScale,
   DEFAULT_LANE_ID,
   extentOf,
   filterItems,
   GREGORIAN,
+  HARBOR,
   itemMatches,
   packLanes,
   parseTimelineConfig,
@@ -20,6 +22,8 @@ import type { Lane, TimelineItem } from "../src/core";
 
 const reckoning = createCalendar(RECKONING);
 const gregorian = createCalendar(GREGORIAN);
+const harbor = createCalendar(HARBOR);
+const CALENDARS = [reckoning, gregorian, harbor];
 
 const SIEGE = `---
 type: event
@@ -54,6 +58,8 @@ describe("frontmatter", () => {
     expect(item.tags).toEqual(["war", "siege"]);
     expect(item.links.places).toEqual(["[[Port Haven]]"]);
     expect(item.color).toBe("#c0392b");
+    expect(item.calendarId).toBe("reckoning");
+    expect(item.source.calendarId).toBe("reckoning");
     expect(item.parseError).toBeUndefined();
     const extent = extentOf(item);
     expect(extent.from).toBe(item.start);
@@ -214,22 +220,134 @@ view:
 `,
       "gregorian"
     );
-    expect(config.calendarId).toBe("reckoning");
+    expect(config.displayCalendarId).toBe("reckoning");
     expect(config.source.folders).toEqual(["notes/history"]);
     expect(config.lanes?.order).toEqual(["[[House Vey]]"]);
     expect(config.filters?.kinds).toEqual(["event", "span"]);
     expect(config.view?.from).toBe("3A 400");
   });
+
+  it("reads a display calendar and a culture filter", () => {
+    const config = parseTimelineConfig(
+      `
+displayCalendar: gregorian
+filters:
+  calendar: harbor
+  culture: "[[Tideborn]]"
+`,
+      "reckoning"
+    );
+    expect(config.displayCalendarId).toBe("gregorian");
+    expect(config.filters?.calendars).toEqual(["harbor"]);
+    expect(config.filters?.cultures).toEqual(["[[Tideborn]]"]);
+  });
 });
 
-function mustParse(markdown: string): TimelineItem {
+describe("two calendars on one axis", () => {
+  const world = harbor.def.epochOffset;
+
+  it("uses the vault default when a note omits calendar, and writeback leaves the key off", () => {
+    const markdown = "---\ntype: event\nstart: \"1970-01-01\"\n---\n# Landing\n";
+    const item = parseTimelineNote(markdown, {
+      path: "notes/landing.md",
+      calendars: CALENDARS,
+      defaultCalendarId: "gregorian",
+    });
+    expect(item?.calendarId).toBe("gregorian");
+    expect(item?.start).toBe(0);
+    expect(item?.culture).toBeUndefined();
+    if (!item) return;
+    const plan = planMove(item, 1, "move", { fine: false, calendar: calendarForItem(item, CALENDARS) });
+    const written = applyPlanToNote(markdown, plan);
+    expect(written).not.toMatch(/^calendar:/m);
+    const again = parseTimelineNote(written, {
+      path: "notes/landing.md",
+      calendars: CALENDARS,
+      defaultCalendarId: "gregorian",
+    });
+    expect(again?.calendarId).toBe("gregorian");
+    expect(again?.start).toBe(plan.start);
+    expect(again?.source.startRaw).toBe(plan.startRaw);
+    expect(gregorian.parse(plan.startRaw).ok).toBe(true);
+  });
+
+  it("lines Harbor and Reckoning up on world days and writes each note back in its own calendar", () => {
+    expect(harbor.def.epochOffset).not.toBe(reckoning.def.epochOffset);
+    const harborDate = harbor.fromDays(world, "day");
+    const reckoningDate = reckoning.fromDays(world, "day");
+    expect(harbor.toDays(harborDate)).toBe(world);
+    expect(reckoning.toDays(reckoningDate)).toBe(world);
+    expect(world - harbor.def.epochOffset).not.toBe(world - reckoning.def.epochOffset);
+
+    const tide = note("harbor", harbor.format(harborDate), "[[Tideborn]]", "First tide");
+    const vey = note("reckoning", reckoning.format(reckoningDate), "[[Vey]]", "Same dawn");
+    const sol = note("reckoning", reckoning.format(reckoning.fromDays(world + 10, "day")), "[[Sol]]", "Later");
+    const tideItem = mustParse(tide, "notes/tide.md");
+    const veyItem = mustParse(vey, "notes/vey.md");
+    const solItem = mustParse(sol, "notes/sol.md");
+
+    expect(tideItem.start).toBe(veyItem.start);
+    expect(tideItem.calendarId).toBe("harbor");
+    expect(veyItem.calendarId).toBe("reckoning");
+    expect(tideItem.culture).toBe("[[Tideborn]]");
+    expect(gregorian.format(gregorian.fromDays(tideItem.start, "day"))).toBe(
+      gregorian.format(gregorian.fromDays(veyItem.start, "day"))
+    );
+
+    const items = [tideItem, veyItem, solItem];
+    expect(filterItems(items, { calendars: ["Harbor"] }).map((item) => item.id)).toEqual(["notes/tide.md"]);
+    expect(filterItems(items, { cultures: ["[[tideborn]]"] }).map((item) => item.id)).toEqual(["notes/tide.md"]);
+    expect(filterItems(items, { calendars: ["reckoning"], cultures: ["[[Vey]]"] }).map((item) => item.id)).toEqual([
+      "notes/vey.md",
+    ]);
+    expect(filterItems(items, undefined)).toHaveLength(3);
+
+    expect(() => planMove(tideItem, 36, "move", { fine: false, calendar: reckoning })).toThrow(/harbor/);
+    const tidePlan = planMove(tideItem, 36, "move", { fine: false, calendar: calendarForItem(tideItem, CALENDARS) });
+    const veyPlan = planMove(veyItem, 36, "move", { fine: false, calendar: calendarForItem(veyItem, CALENDARS) });
+    expect(tidePlan.start).toBe(veyPlan.start);
+    expect(tidePlan.startRaw).not.toBe(veyPlan.startRaw);
+    expect(tidePlan.startRaw).toMatch(/Tidewake|Foamrise/);
+    expect(veyPlan.startRaw).toMatch(/A /);
+
+    const tideWritten = applyPlanToNote(tide, tidePlan);
+    const veyWritten = applyPlanToNote(vey, veyPlan);
+    expect(tideWritten).toContain("calendar: harbor");
+    expect(tideWritten).toContain("[[Tideborn]]");
+    expect(veyWritten).toContain("calendar: reckoning");
+    const tideAgain = mustParse(tideWritten, "notes/tide.md");
+    const veyAgain = mustParse(veyWritten, "notes/vey.md");
+    expect(tideAgain.start).toBe(tidePlan.start);
+    expect(veyAgain.start).toBe(veyPlan.start);
+    expect(tideAgain.start).toBe(veyAgain.start);
+    expect(tideAgain.source.startRaw).toBe(tidePlan.startRaw);
+    expect(veyAgain.source.startRaw).toBe(veyPlan.startRaw);
+    expect(tideAgain.calendarId).toBe("harbor");
+    expect(veyAgain.culture).toBe("[[Vey]]");
+    expect(harbor.parse(tideAgain.source.startRaw)).toMatchObject({ ok: true, days: tideAgain.start });
+    expect(reckoning.parse(veyAgain.source.startRaw)).toMatchObject({ ok: true, days: veyAgain.start });
+  });
+});
+
+function mustParse(markdown: string, path = "notes/siege.md"): TimelineItem {
   const item = parseTimelineNote(markdown, {
-    path: "notes/siege.md",
-    calendars: [reckoning, gregorian],
+    path,
+    calendars: CALENDARS,
     defaultCalendarId: "reckoning",
   });
   if (!item) throw new Error("expected a timeline note");
   return item;
+}
+
+function note(calendarId: string, start: string, culture: string, title: string): string {
+  return `---
+type: event
+calendar: ${calendarId}
+culture: "${culture}"
+start: "${start}"
+---
+# ${title}
+`;
 }
 
 function fake(id: string, from: number, to: number, laneId: string | null): TimelineItem {
@@ -244,6 +362,7 @@ function fake(id: string, from: number, to: number, laneId: string | null): Time
     endPrecision: "day",
     laneId,
     tags: [],
+    calendarId: "gregorian",
     links: { places: [], people: [], other: [] },
     source: { path: id, startRaw: String(from), endRaw: String(to), calendarId: "gregorian" },
   };

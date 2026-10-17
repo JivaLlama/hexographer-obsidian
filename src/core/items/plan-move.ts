@@ -6,7 +6,10 @@ import { finerPrecision } from "./precision";
 export interface PlanMoveOptions {
   /** Alt-drag. Snaps one precision finer and writes that finer precision back. */
   fine: boolean;
-  /** Required to snap and to format. The view does not format dates itself. */
+  /**
+   * The note's own calendar (`calendarForItem`). Writeback keeps that format.
+   * Passing the display calendar throws when it is a different id.
+   */
   calendar: CalendarEngine;
 }
 
@@ -22,6 +25,11 @@ export function planMove(
   mode: MoveMode,
   opts: PlanMoveOptions
 ): PlanMoveResult {
+  if (opts.calendar.def.id !== item.calendarId) {
+    throw new Error(
+      `planMove formats with the note's calendar "${item.calendarId}", not "${opts.calendar.def.id}"`
+    );
+  }
   const calendar = opts.calendar;
   let startPrecision = opts.fine ? finerPrecision(item.startPrecision) : item.startPrecision;
   let endPrecision: Precision = opts.fine

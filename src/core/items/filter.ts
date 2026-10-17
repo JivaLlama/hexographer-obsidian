@@ -16,9 +16,18 @@ export function itemMatches(item: TimelineItem, filter: FilterState | undefined)
   if (filter.lanes && filter.lanes.length > 0 && item.kind !== "era") {
     if (item.laneId === null || !filter.lanes.includes(item.laneId)) return false;
   }
+  if (filter.calendars && filter.calendars.length > 0) {
+    const ids = new Set(filter.calendars.map(normalizeName));
+    if (!ids.has(normalizeName(item.calendarId))) return false;
+  }
+  if (filter.cultures && filter.cultures.length > 0) {
+    if (!item.culture || !filter.cultures.some((culture) => normalizeName(culture) === normalizeName(item.culture ?? ""))) {
+      return false;
+    }
+  }
   if (filter.text) {
     const needle = filter.text.toLowerCase();
-    const haystack = `${item.title} ${item.tags.join(" ")} ${item.laneId ?? ""}`.toLowerCase();
+    const haystack = `${item.title} ${item.tags.join(" ")} ${item.laneId ?? ""} ${item.culture ?? ""} ${item.calendarId}`.toLowerCase();
     if (!haystack.includes(needle)) return false;
   }
   if (filter.range) {
@@ -35,4 +44,8 @@ export function filterItems(items: readonly TimelineItem[], filter: FilterState 
 
 function normalizeTag(tag: string): string {
   return tag.trim().replace(/^#/, "").toLowerCase();
+}
+
+function normalizeName(value: string): string {
+  return value.trim().toLowerCase();
 }

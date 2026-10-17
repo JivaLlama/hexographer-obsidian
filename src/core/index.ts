@@ -8,6 +8,8 @@ export {
   createCalendar,
   fromLocalDays,
   GREGORIAN,
+  HARBOR,
+  HARBOR_EPOCH_OFFSET,
   parseCalendarDocument,
   RECKONING,
   serializeCalendarDocument,
@@ -33,7 +35,7 @@ export type {
 export { parseTimelineConfig } from "./config/parse-config";
 export { extentOf } from "./items/extent";
 export { filterItems, itemMatches } from "./items/filter";
-export { applyPlanToNote, parseTimelineNote, serializeTimelineNote } from "./items/frontmatter";
+export { applyPlanToNote, calendarForItem, parseTimelineNote, serializeTimelineNote } from "./items/frontmatter";
 export type { ParseTimelineNoteOptions, TimelineWriteback } from "./items/frontmatter";
 export { planMove } from "./items/plan-move";
 export type { PlanMoveOptions } from "./items/plan-move";

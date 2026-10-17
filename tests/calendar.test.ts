@@ -5,6 +5,7 @@ import {
   convert,
   createCalendar,
   GREGORIAN,
+  HARBOR,
   parseCalendarDocument,
   RECKONING,
   serializeCalendarDocument,
@@ -145,6 +146,22 @@ describe("reckoning", () => {
     const file = readFileSync(path.join("samples", "calendars", "reckoning.calendar.md"), "utf8");
     expect(parseCalendarDocument(file)).toEqual(RECKONING);
     expect(parseCalendarDocument(serializeCalendarDocument(RECKONING, "A note.\n"))).toEqual(RECKONING);
+  });
+});
+
+describe("harbor", () => {
+  const h = createCalendar(HARBOR);
+
+  it("loads the vault sample on a different epoch from the Reckoning", () => {
+    const file = readFileSync(path.join("samples", "calendars", "harbor.calendar.md"), "utf8");
+    expect(parseCalendarDocument(file)).toEqual(HARBOR);
+    expect(h.def.epochOffset).toBe(10_000);
+    expect(h.def.epochOffset).not.toBe(r.def.epochOffset);
+    const world = h.toDays({ year: 0, month: 0, day: 1, precision: "day" });
+    expect(world).toBe(10_000);
+    expect(r.toDays(r.fromDays(world, "day"))).toBe(world);
+    expect(g.toDays(g.fromDays(world, "day"))).toBe(world);
+    expect(h.format(h.fromDays(world, "day"))).toBe("0 Tidewake 1");
   });
 });
 
