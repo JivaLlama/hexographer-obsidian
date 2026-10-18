@@ -1,5 +1,6 @@
 import { Plugin, WorkspaceLeaf } from "obsidian";
 import { HEX_MAP_VIEW_TYPE, HexMapView } from "./view";
+import { registerWorldTimeline } from "./views/timeline/shell/register";
 
 export default class HexographerPlugin extends Plugin {
   async onload(): Promise<void> {
@@ -16,6 +17,8 @@ export default class HexographerPlugin extends Plugin {
         void this.activateView();
       },
     });
+
+    registerWorldTimeline(this);
   }
 
   onunload(): void {
