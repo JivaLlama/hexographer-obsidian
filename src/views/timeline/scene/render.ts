@@ -32,6 +32,8 @@ export interface TimelineView {
     onChange: (next: boolean | string[]) => void
   ): void;
   setDragTip(text: string | null): void;
+  /** Lane gutter width. The before-reckoning axis label starts at the same edge. */
+  setLaneColumn(px: number): void;
   destroy(): void;
 }
 
@@ -162,6 +164,14 @@ export function createTimelineView(container: HTMLElement, options: TimelineView
     },
     setDragTip(text) {
       chrome.setDragTip(text);
+    },
+    setLaneColumn(px) {
+      const width = `${Math.round(px)}px`;
+      gutter.style.flexBasis = width;
+      gutter.style.width = width;
+      laneCol.style.flexBasis = width;
+      laneCol.style.width = width;
+      axisBefore.style.left = width;
     },
     render(model) {
       const width = Math.max(model.viewportWidth, view.sceneWidth());

@@ -8,6 +8,7 @@ import {
   createCalendar,
   createScale,
   formatYearsAgo,
+  GREGORIAN,
   parseTimelineNote,
   planMove,
   RECKONING,
@@ -28,7 +29,10 @@ import {
   ellipsizeToPx,
   estimateLabelPx,
   HINT_LINE,
+  LANE_COL_MAX_PX,
+  LANE_COL_MIN_PX,
   laneBlockHeight,
+  laneColumnWidth,
   layoutScene,
   pointRadius,
 } from "../src/views/timeline/scene/layout";
@@ -484,6 +488,96 @@ describe("sample vault notes", () => {
     expect(block).toContain("```worldtimeline");
     expect(block).toContain("samples/timeline");
     expect(block).toContain("yearsago");
+  });
+});
+
+describe("before-band labels and order ghosts", () => {
+  const calendars = [createCalendar(GREGORIAN)];
+  const scale = createScale({ originDays: 0, pxPerDay: 0.2, minPxPerDay: 1e-9, maxPxPerDay: 50_000 });
+
+  function scene(notes: { path: string; markdown: string }[], accounts?: boolean) {
+    const parsed = notesFromMarkdown(notes, calendars, "gregorian");
+    return layoutScene({
+      items: parsed.items,
+      ordered: parsed.ordered,
+      calendars,
+      lanes: buildLanes(parsed.items, undefined, parsed.ordered),
+      calendar: calendars[0]!,
+      scale,
+      viewportWidth: 900,
+      itemHeight: 22,
+      overscanPx: 40,
+      minLabelPx: 64,
+      selection: [],
+      ...(accounts !== undefined ? { accounts } : {}),
+    });
+  }
+
+  it("keeps a readable label on a mark parked at the right of the before band", () => {
+    const titles = [
+      "01 - First marker with a long name",
+      "02 - Second marker",
+      "03 - Third marker",
+      "04 - Fourth marker",
+      "05 - Fifth marker with a long name",
+    ];
+    const model = scene(
+      titles.map((title, index) => ({
+        path: `notes/${title}.md`,
+        markdown: `---
+type: event
+order: ${index + 1}
+lane: Gods
+---
+# ${title}
+`,
+      }))
+    );
+    const last = model.items.find((item) => item.title.startsWith("05 - Fifth"));
+    expect(last?.pinned).toBe(true);
+    expect(last?.label.startsWith("05 - Fifth")).toBe(true);
+    expect(last?.label.length).toBeGreaterThan(12);
+    expect(model.before?.label).toBe("Before reckoning");
+  });
+
+  it("draws order-only account ghosts from barsForItem", () => {
+    const markdown = `---
+type: event
+order: 4
+lane: Beasts
+accounts:
+  - by: "Option A"
+    order: 4
+    claim: "one event"
+  - by: "Option B"
+    order: 2.5
+    claim: "two waves"
+---
+# Forked Event
+`;
+    const shown = scene([{ path: "notes/Forked Event.md", markdown }], true);
+    const ghosts = shown.items.filter((item) => item.ghost);
+    expect(ghosts.map((item) => item.title).sort()).toEqual(["Option A", "Option B"]);
+    const optionB = ghosts.find((item) => item.title === "Option B");
+    expect(optionB?.tooltip).toContain("two waves");
+    expect(optionB?.tooltip).toContain("by Option B");
+    expect(optionB?.pinned).toBe(true);
+    const primary = shown.items.find((item) => item.title === "Forked Event");
+    expect(primary).toBeDefined();
+    expect(primary?.ghost).toBeUndefined();
+    const hidden = scene([{ path: "notes/Forked Event.md", markdown }]);
+    expect(hidden.items.filter((item) => item.ghost)).toHaveLength(0);
+  });
+});
+
+describe("lane column width", () => {
+  it("grows for a long lane name and stays capped", () => {
+    expect(laneColumnWidth(["Beasts"], estimateLabelPx)).toBe(LANE_COL_MIN_PX);
+    const long = "Magic · the Word · Temple & Academy";
+    const grown = laneColumnWidth([long], estimateLabelPx);
+    expect(grown).toBeGreaterThan(LANE_COL_MIN_PX);
+    expect(grown).toBeLessThanOrEqual(LANE_COL_MAX_PX);
+    expect(laneColumnWidth(["x".repeat(80)], estimateLabelPx)).toBe(LANE_COL_MAX_PX);
   });
 });
 

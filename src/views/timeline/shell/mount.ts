@@ -18,7 +18,7 @@ import { bindInteraction } from "../interaction/controller";
 import type { WheelAction } from "../interaction/wheel";
 import { anchorDaysFor } from "../scene/drag";
 import { buildLanes, cameraForDataset, filterOrdered, stubDataset, type TimelineDataset } from "../scene/dataset";
-import { beforeBandInset, layoutScene } from "../scene/layout";
+import { beforeBandInset, laneColumnWidth, layoutScene } from "../scene/layout";
 import { itemsForView } from "../scene/placed";
 import { createTimelineView, type TimelineView } from "../scene/render";
 import { createViewStore, type ViewStore } from "../store";
@@ -174,8 +174,18 @@ export function mountTimeline(options: MountOptions): TimelineMount {
     renderScene();
   };
 
+  const applyLaneColumn = (): void => {
+    if (!dataset || options.mobile) return;
+    const filters = store.get().filters;
+    const filtered = itemsForView(dataset.items, filters, dataset.settings, dataset.calendars);
+    const ordered = filterOrdered(dataset.ordered, filters);
+    const lanes = buildLanes(filtered, dataset.config.lanes?.order, ordered);
+    view.setLaneColumn(laneColumnWidth(lanes.map((lane) => lane.label), (text) => view.labelWidth(text)));
+  };
+
   const fit = (): void => {
     if (!dataset) return;
+    applyLaneColumn();
     const width = view.sceneWidth();
     if (width < 2) return;
     limits = scaleLimitsForCalendar(dataset.calendar, { viewportPx: width });
@@ -302,6 +312,7 @@ export function mountTimeline(options: MountOptions): TimelineMount {
       renderScene();
       publishStatus();
     });
+    applyLaneColumn();
     const width = view.sceneWidth();
     const limitWidth = width >= 2 ? width : 320;
     limits = scaleLimitsForCalendar(dataset.calendar, { viewportPx: limitWidth });

@@ -161,7 +161,10 @@ export function itemsForView(
   });
 }
 
-export function cultureForItem(item: TimelineItem, filters: FilterState | undefined): string | undefined {
+export function cultureForItem(
+  item: { accounts?: readonly { by: string }[] | undefined },
+  filters: FilterState | undefined
+): string | undefined {
   const cultures = filters?.cultures;
   if (!cultures || cultures.length === 0) return undefined;
   for (const culture of cultures) {

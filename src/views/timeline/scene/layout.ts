@@ -1,5 +1,6 @@
 import {
   BEFORE_RECKONING,
+  barsForItem,
   eraAnchors,
   extentOf,
   formatYearsAgo,
@@ -174,6 +175,20 @@ export function estimateLabelPx(title: string): number {
   return Math.ceil(title.length * LABEL_CHAR_PX);
 }
 
+/** Lane-name column. Short names keep the theme width; long names grow up to the cap. */
+export const LANE_COL_MIN_PX = 148;
+export const LANE_COL_MAX_PX = 240;
+
+export function laneColumnWidth(
+  labels: readonly string[],
+  measure: (text: string) => number,
+  pad = 16
+): number {
+  let widest = 0;
+  for (const label of labels) widest = Math.max(widest, measure(label));
+  return Math.min(LANE_COL_MAX_PX, Math.max(LANE_COL_MIN_PX, Math.ceil(widest + pad)));
+}
+
 /**
  * Truncate `title` so `measure` reports at most `maxPx`. A remaining collision
  * keeps a trailing ellipsis. Returns "" when even the ellipsis does not fit;
@@ -284,6 +299,8 @@ function layoutSceneAt(input: SceneLayoutInput, inset: number): SceneModel {
     right,
     itemHeight,
     measure,
+    ...(input.accounts !== undefined ? { accounts: input.accounts } : {}),
+    ...(input.cultures ? { cultures: input.cultures } : {}),
   });
 
   const rowHints = new Map<string, boolean[]>();
@@ -297,6 +314,7 @@ function layoutSceneAt(input: SceneLayoutInput, inset: number): SceneModel {
     noteHint(entry.item.laneId ?? "", packed.rows.get(entry.item.id) ?? 0, entry.item.displayHint);
   }
   for (const mark of ordered.marks) {
+    if (mark.ghost) continue;
     const laneId = mark.item.laneId ?? "";
     noteHint(laneId, (datedRows.get(laneId) ?? 0) + mark.localRow, mark.item.displayHint);
   }
@@ -396,7 +414,7 @@ function layoutSceneAt(input: SceneLayoutInput, inset: number): SceneModel {
     const lane = laneY.get(laneId);
     const slot = plans.get(laneId)?.[(datedRows.get(laneId) ?? 0) + placed.localRow];
     if (!lane || !slot) continue;
-    items.push(orderedBox(placed, lane.y + LANE_PAD + slot.offset, itemHeight, selected.has(placed.item.id), measure));
+    items.push(orderedBox(placed, lane.y + LANE_PAD + slot.offset, itemHeight, selected.has(placed.barId), measure));
   }
 
   const datedWidth = Math.max(width - origin, 1);
@@ -592,11 +610,32 @@ const BEFORE_LABEL = "Before reckoning";
 
 interface OrderedMark {
   item: OrderedItem;
+  /** Bar order. Account ghosts can differ from the note's order. */
+  order: number;
   x: number;
   localRow: number;
   pinned: boolean;
   eraLabel: string;
   labelLimit: number;
+  labelText: string;
+  barId: string;
+  ghost: boolean;
+  claim?: string;
+  by?: string;
+  accountIndex?: number;
+  certainty?: Certainty;
+}
+
+interface OrderedSlot {
+  item: OrderedItem;
+  order: number;
+  labelText: string;
+  barId: string;
+  ghost: boolean;
+  claim?: string;
+  by?: string;
+  accountIndex?: number;
+  certainty?: Certainty;
 }
 
 function layoutOrdered(input: {
@@ -608,11 +647,42 @@ function layoutOrdered(input: {
   right: number;
   itemHeight: number;
   measure: (title: string) => number;
+  accounts?: boolean | string[];
+  cultures?: readonly string[];
 }): { marks: OrderedMark[]; extraRows: Map<string, number>; before: { width: number; label: string } | null } {
   const groups = groupOrderedItems(input.ordered, eraAnchors(input.eras, input.calendars));
   const eraById = new Map(input.eras.map((era) => [era.id, era]));
   const pending: Array<Omit<OrderedMark, "localRow">> = [];
   let needsBefore = false;
+  const filters = input.cultures ? { cultures: [...input.cultures] } : undefined;
+
+  const pushSlots = (
+    slots: readonly OrderedSlot[],
+    origin: number,
+    inner: number,
+    pinned: boolean,
+    eraLabel: string,
+    labelLimit: number
+  ): void => {
+    const xAt = xForOrders(slots, origin, inner);
+    for (const slot of slots) {
+      pending.push({
+        item: slot.item,
+        order: slot.order,
+        x: xAt(slot.order),
+        pinned,
+        eraLabel,
+        labelLimit,
+        labelText: slot.labelText,
+        barId: slot.barId,
+        ghost: slot.ghost,
+        ...(slot.claim ? { claim: slot.claim } : {}),
+        ...(slot.by ? { by: slot.by } : {}),
+        ...(slot.accountIndex !== undefined ? { accountIndex: slot.accountIndex } : {}),
+        ...(slot.certainty ? { certainty: slot.certainty } : {}),
+      });
+    }
+  };
 
   for (const group of groups) {
     const era = eraById.get(group.eraKey);
@@ -624,33 +694,14 @@ function layoutOrdered(input: {
       !Number.isFinite(extent.from) ||
       !Number.isFinite(extent.to) ||
       !(extent.to > extent.from);
+    const slots = group.items.flatMap((item) => orderedSlots(item, input.accounts, cultureForItem(item, filters)));
     const span = !unbounded && extent ? clipSpan(input.scale.toPx(extent.from), input.scale.toPx(extent.to), input.left, input.right) : null;
     if (unbounded || !span || span.width < 48) {
       needsBefore = true;
-      const inner = BEFORE_BAND_PX - 16;
-      group.items.forEach((item, index) => {
-        const count = Math.max(group.items.length, 1);
-        pending.push({
-          item,
-          x: 8 + ((index + 0.5) * inner) / count,
-          pinned: true,
-          eraLabel: BEFORE_LABEL,
-          labelLimit: BEFORE_BAND_PX - 8,
-        });
-      });
+      pushSlots(slots, 8, BEFORE_BAND_PX - 16, true, BEFORE_LABEL, BEFORE_BAND_PX - 8);
       continue;
     }
-    group.items.forEach((item, index) => {
-      const count = Math.max(group.items.length, 1);
-      const inner = Math.max(span.width - 16, 1);
-      pending.push({
-        item,
-        x: span.x + 8 + ((index + 0.5) * inner) / count,
-        pinned: false,
-        eraLabel: group.label,
-        labelLimit: Number.POSITIVE_INFINITY,
-      });
-    });
+    pushSlots(slots, span.x + 8, Math.max(span.width - 16, 1), false, group.label, Number.POSITIVE_INFINITY);
   }
 
   const byLane = new Map<string, Array<Omit<OrderedMark, "localRow">>>();
@@ -664,13 +715,11 @@ function layoutOrdered(input: {
   const marks: OrderedMark[] = [];
   const extraRows = new Map<string, number>();
   for (const [laneId, list] of byLane) {
-    list.sort((a, b) => a.x - b.x || a.item.order - b.item.order || a.item.id.localeCompare(b.item.id));
+    list.sort((a, b) => a.x - b.x || a.order - b.order || a.barId.localeCompare(b.barId));
     const rowEnds: number[] = [];
     for (const mark of list) {
-      const textPx = Math.max(
-        input.measure(mark.item.title),
-        mark.item.displayHint ? input.measure(mark.item.displayHint) : 0
-      );
+      const hintPx = mark.ghost || !mark.item.displayHint ? 0 : input.measure(mark.item.displayHint);
+      const textPx = Math.max(input.measure(mark.labelText), hintPx);
       const reach = mark.x + pointMarkPad(input.itemHeight) + textPx + LABEL_GAP;
       let localRow = rowEnds.findIndex((end) => end <= mark.x - pointRadius(input.itemHeight));
       if (localRow < 0) {
@@ -692,7 +741,21 @@ function layoutOrdered(input: {
     else byRow.set(key, [mark]);
   }
   for (const list of byRow.values()) {
-    list.sort((a, b) => a.x - b.x);
+    list.sort((a, b) => a.x - b.x || a.order - b.order);
+    for (let index = list.length - 1; index >= 0; index--) {
+      const mark = list[index];
+      if (!mark?.pinned) continue;
+      const hintPx = mark.ghost || !mark.item.displayHint ? 0 : input.measure(mark.item.displayHint);
+      const textPx = Math.max(input.measure(mark.labelText), hintPx);
+      const roomNeed = pointMarkPad(input.itemHeight) + textPx + LABEL_GAP;
+      const maxX = BEFORE_BAND_PX - 8 - roomNeed;
+      const prev = list[index - 1];
+      const minX = prev ? prev.x + pointRadius(input.itemHeight) * 2 + LABEL_GAP : 8;
+      const next = list[index + 1];
+      const maxByNext = next ? next.x - pointRadius(input.itemHeight) * 2 - LABEL_GAP : Number.POSITIVE_INFINITY;
+      const target = Math.min(mark.x, maxX, maxByNext);
+      mark.x = Math.max(minX, Math.max(8, target));
+    }
     for (let index = 0; index < list.length; index++) {
       const mark = list[index];
       const next = list[index + 1];
@@ -710,6 +773,58 @@ function layoutOrdered(input: {
   };
 }
 
+/** Even slots for distinct orders. The same order shares an x, so those bars stack on collision. */
+function xForOrders(slots: readonly OrderedSlot[], origin: number, inner: number): (order: number) => number {
+  const orders = [...new Set(slots.map((slot) => slot.order))].sort((a, b) => a - b);
+  const count = Math.max(orders.length, 1);
+  const at = new Map(orders.map((order, index) => [order, origin + ((index + 0.5) * inner) / count]));
+  return (order) => at.get(order) ?? origin;
+}
+
+/**
+ * The note plus any order-only account ghosts from `barsForItem`.
+ * A dated account on an order-only note is not placed here.
+ */
+function orderedSlots(
+  item: OrderedItem,
+  accounts: boolean | string[] | undefined,
+  culture: string | undefined
+): OrderedSlot[] {
+  const bars = barsForItem(item, {
+    ...(culture ? { culture } : {}),
+    ...(accounts !== undefined ? { accounts } : {}),
+  });
+  const slots: OrderedSlot[] = [];
+  const primary = bars.primary;
+  const primaryIsAccount = primary.accountIndex !== undefined;
+  slots.push({
+    item,
+    order: primary.order ?? item.order,
+    labelText: primaryIsAccount ? primary.culture?.trim() || item.title : item.title,
+    barId: primary.id,
+    ghost: false,
+    ...(primary.claim ? { claim: primary.claim } : {}),
+    ...(primaryIsAccount && primary.culture ? { by: primary.culture } : {}),
+    ...(primaryIsAccount ? { accountIndex: primary.accountIndex } : {}),
+    certainty: primary.certainty ?? item.certainty,
+  });
+  for (const ghost of bars.ghosts) {
+    if (ghost.order === undefined) continue;
+    slots.push({
+      item,
+      order: ghost.order,
+      labelText: ghost.culture?.trim() || (ghost.notePrimary ? "note date" : "account"),
+      barId: ghost.id,
+      ghost: true,
+      ...(ghost.claim ? { claim: ghost.claim } : {}),
+      ...(ghost.culture ? { by: ghost.culture } : {}),
+      ...(ghost.accountIndex !== undefined ? { accountIndex: ghost.accountIndex } : {}),
+      ...(ghost.certainty ? { certainty: ghost.certainty } : {}),
+    });
+  }
+  return slots;
+}
+
 function orderedBox(
   mark: OrderedMark,
   y: number,
@@ -719,18 +834,22 @@ function orderedBox(
 ): ItemBox {
   const labelX = mark.x + pointMarkPad(height);
   const room = mark.labelLimit - labelX;
-  const label = ellipsizeToPx(mark.item.title, room, measure);
-  const hint = mark.item.displayHint ? ellipsizeToPx(mark.item.displayHint, room, measure) : "";
+  const label = ellipsizeToPx(mark.labelText, room, measure);
+  const hint = mark.ghost || !mark.item.displayHint ? "" : ellipsizeToPx(mark.item.displayHint, room, measure);
+  const certainty = mark.certainty ?? mark.item.certainty;
+  const tooltip = mark.ghost
+    ? [mark.item.title, mark.by ? `by ${mark.by}` : "", mark.claim, mark.eraLabel, certainty].filter((line) => Boolean(line)).join("\n")
+    : itemTooltip(mark.item.title, certainty, mark.item.displayHint, mark.eraLabel, mark.claim);
   return {
-    id: mark.item.id,
+    id: mark.barId,
     kind: "event",
-    title: mark.item.title,
+    title: mark.labelText,
     label,
     labelX,
     labelOutside: false,
-    tooltip: itemTooltip(mark.item.title, mark.item.certainty, mark.item.displayHint, mark.eraLabel),
+    tooltip,
     hint,
-    ...(mark.item.certainty ? { certainty: mark.item.certainty } : {}),
+    ...(certainty ? { certainty } : {}),
     ordered: true,
     pinned: mark.pinned,
     x: mark.x,
@@ -741,7 +860,11 @@ function orderedBox(
     bracket: null,
     laneId: mark.item.laneId ?? "",
     tags: mark.item.tags.join(" "),
-    ...(mark.item.color ? { color: mark.item.color } : {}),
+    ...(mark.ghost || !mark.item.color ? {} : { color: mark.item.color }),
+    ...(mark.ghost ? { ghost: true } : {}),
+    ...(mark.accountIndex !== undefined ? { accountIndex: mark.accountIndex } : {}),
+    ...(mark.by ? { by: mark.by } : {}),
+    ...(mark.claim ? { claim: mark.claim } : {}),
     selected,
   };
 }
